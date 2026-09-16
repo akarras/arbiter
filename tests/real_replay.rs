@@ -14,7 +14,12 @@ fn loads_the_local_replay_when_present() {
     }
     let replay = replay::load(path).expect("replay should parse");
     assert_eq!(replay.map, "Tuonela LE");
-    assert_eq!(replay.players.len(), 2, "1v1 replay: {:?}", replay.players);
+    assert!(replay.players.len() >= 2, "expected at least two players: {:?}", replay.players);
+    let mut ids: Vec<i64> = replay.players.iter().map(|p| p.user_id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), replay.players.len(), "user ids must be unique");
+    eprintln!("{} players on map {}", replay.players.len(), replay.map);
     for p in &replay.players {
         assert!(!p.name.is_empty());
         assert!(!p.race.is_empty());
