@@ -37,10 +37,13 @@ pub fn escape_html(s: &str) -> String {
 }
 
 /// Escapes a string for use inside a JSON string literal that lives in a
-/// `<script>` block. `</` becomes `<\/` so a name cannot close the block.
+/// `<script>` block. Every `<` becomes `<` unconditionally, so no raw
+/// `<` ever reaches the HTML parser and a name cannot close the block (this
+/// covers `</script>` and any other tag, not just the `</` case).
+/// `JSON.parse` decodes `<` back to the identical `<` character, so the
+/// parsed string value is unchanged.
 pub fn escape_json(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    let mut prev = '\0';
     for c in s.chars() {
         match c {
             '"' => out.push_str("\\\""),
@@ -48,13 +51,12 @@ pub fn escape_json(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            '/' if prev == '<' => out.push_str("\\/"),
+            '<' => out.push_str("\\u003c"),
             c if (c as u32) < 0x20 => {
                 let _ = write!(out, "\\u{:04x}", c as u32);
             }
             _ => out.push(c),
         }
-        prev = c;
     }
     out
 }
@@ -370,7 +372,7 @@ mod tests {
 
     #[test]
     fn escapes_json_strings_and_script_closers() {
-        assert_eq!(escape_json("a\"b\\c\n</script>"), "a\\\"b\\\\c\\n<\\/script>");
+        assert_eq!(escape_json("a\"b\\c\n</script>"), "a\\\"b\\\\c\\n\\u003c/script>");
     }
 
     #[test]
@@ -396,14 +398,29 @@ mod tests {
         assert!(html.contains("[5.0,60.0]"), "points are [secs, apm] pairs");
     }
 
+    /// Slices out just the JSON payload text between the `<script>` tags,
+    /// excluding the tags themselves (which legitimately contain `<`).
+    fn json_payload(html: &str) -> &str {
+        let open_tag_end = html.find(r#"<script id="data" type="application/json">"#).unwrap()
+            + r#"<script id="data" type="application/json">"#.len();
+        let close_tag_start = html[open_tag_end..].find("</script>").unwrap() + open_tag_end;
+        &html[open_tag_end..close_tag_start]
+    }
+
     #[test]
     fn json_block_cannot_be_closed_by_a_player_name() {
         let html = render(&chart(vec![series("x</script><script>alert(1)", &[1.0])]));
-        let json_start = html.find(r#"<script id="data""#).unwrap();
-        let json_end = html[json_start..].find("</script>").unwrap() + json_start;
-        let block = &html[json_start..json_end];
-        assert!(block.contains(r"x<\/script><script>alert(1)"));
-        assert!(!block.contains("x</script>"));
+        let payload = json_payload(&html);
+        assert!(payload.contains("x\\u003c/script>\\u003cscript>alert(1)"));
+        assert!(!payload.contains('<'), "no raw < may survive in the JSON block: {payload}");
+    }
+
+    #[test]
+    fn no_raw_angle_bracket_survives_html_comment_and_script_tricks() {
+        let html = render(&chart(vec![series("<!--<script", &[1.0])]));
+        let payload = json_payload(&html);
+        assert!(!payload.contains('<'), "no raw < may survive in the JSON block: {payload}");
+        assert!(payload.contains("\\u003c!--\\u003cscript"));
     }
 
     #[test]
@@ -434,3 +451,4 @@ mod tests {
         assert!(!html.contains("Drag to zoom"));
     }
 }
+
