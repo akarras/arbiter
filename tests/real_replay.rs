@@ -66,6 +66,20 @@ fn loads_the_local_replay_when_present() {
         "in this 4v4 at least one player stops acting before the replay ends"
     );
 
+    assert!(!replay.stats.is_empty(), "fixture has tracker stats");
+    let last_stats_loop = replay.stats.last().unwrap().game_loop;
+    assert!((replay.duration_loops - last_stats_loop).abs() < 50, "tracker clock matches: {last_stats_loop} vs {}", replay.duration_loops);
+    for p in &replay.players {
+        let mine: Vec<_> = replay.stats.iter().filter(|s| s.player_id == p.player_id).collect();
+        assert!(mine.len() > 50, "{} has only {} samples", p.name, mine.len());
+        assert!(mine.iter().all(|s| (0.0..=400.0).contains(&s.supply_made)), "{} supply_made out of range", p.name);
+        assert!(mine.iter().map(|s| s.workers).max().unwrap() > 10, "{} never had more than 10 workers", p.name);
+        assert!(mine.windows(2).all(|w| w[0].game_loop <= w[1].game_loop));
+    }
+    let kinds: std::collections::BTreeSet<_> = replay.actions.iter().map(|a| format!("{:?}", a.kind)).collect();
+    assert!(kinds.len() >= 4, "expected several action kinds, got {kinds:?}");
+    eprintln!("stats samples {} kinds {kinds:?}", replay.stats.len());
+
     // Each player's line must end when they stop acting, not at the replay's end.
     let html = arbiter::pipeline::chart_html(path).expect("chart renders");
     let start = html.find(r#"<script id="data" type="application/json">"#).unwrap()

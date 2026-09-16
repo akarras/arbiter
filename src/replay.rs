@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 use s2protocol::details::PlayerLobbyDetails;
 use s2protocol::game_events::ReplayGameEvent;
 use s2protocol::init_data::InitData;
+use s2protocol::tracker_events::ReplayTrackerEvent;
 
 /// Blizzard's `GameDescription.game_speed` value for "Faster", the only
 /// speed at which `apm::LOOPS_PER_SECOND` (22.4) is the correct loop rate.
@@ -29,12 +30,45 @@ pub struct Player {
     /// Game loop of this player's last event of any kind: the end of their
     /// time in the game, which is the denominator Blizzard uses for APM.
     pub last_event_loop: i64,
+    /// 1-based index in `replay.details` player order; tracker events and
+    /// the game metadata use this id.
+    pub player_id: u8,
+}
+
+/// What a counted action was, for the APM breakdown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionKind {
+    Command,
+    Selection,
+    ControlGroup,
+    Repeat,
+    Retarget,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Action {
     pub user_id: i64,
     pub game_loop: i64,
+    pub kind: ActionKind,
+}
+
+/// One tracker `PlayerStats` sample (about every 160 loops per player).
+/// Supply values are already in supply units; resources are raw counts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatsSample {
+    pub player_id: u8,
+    pub game_loop: i64,
+    pub minerals_rate: i32,
+    pub vespene_rate: i32,
+    pub minerals_unspent: i32,
+    pub vespene_unspent: i32,
+    pub workers: i32,
+    pub supply_used: f64,
+    pub supply_made: f64,
+    pub army_minerals: i32,
+    pub army_vespene: i32,
+    pub lost_minerals: i32,
+    pub lost_vespene: i32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +81,9 @@ pub struct Replay {
     pub actions: Vec<Action>,
     /// From replay.gamemetadata.json, written by the game client.
     pub game_duration_secs: Option<f64>,
+    /// Tracker samples in loop order for kept players; empty when the
+    /// replay has no tracker stream.
+    pub stats: Vec<StatsSample>,
 }
 
 pub fn load(path: &Path) -> Result<Replay> {
@@ -90,6 +127,7 @@ pub fn load(path: &Path) -> Result<Replay> {
                 result: p.player_details.result.clone(),
                 game_apm: game_apm[position],
                 last_event_loop: 0,
+                player_id: position as u8 + 1,
             })
         })
         .collect();
@@ -109,8 +147,8 @@ pub fn load(path: &Path) -> Result<Replay> {
             continue;
         };
         player.last_event_loop = game_loop;
-        if counts_as_action(&ev.event) {
-            actions.push(Action { user_id: ev.user_id, game_loop });
+        if let Some(kind) = action_kind(&ev.event) {
+            actions.push(Action { user_id: ev.user_id, game_loop, kind });
         }
     }
     if !(0..=MAX_DURATION_LOOPS).contains(&game_loop) {
@@ -118,24 +156,62 @@ pub fn load(path: &Path) -> Result<Replay> {
             "replay duration of {game_loop} game loops is implausible (expected 0..={MAX_DURATION_LOOPS}, i.e. up to 24 hours); the file is likely corrupt"
         );
     }
-    Ok(Replay { map, duration_loops: game_loop, players, actions, game_duration_secs })
+    let stats = read_stats(path_str, &mpq, &contents, &players);
+    Ok(Replay { map, duration_loops: game_loop, players, actions, game_duration_secs, stats })
 }
 
-/// The event types SC2's own APM counts: commands, selections, control groups,
-/// repeats of the previous command (`CommandManagerState`, how the replay
-/// stores "press Z again"), and re-issuing the previous command on a new unit
+/// The event types SC2's own APM counts, tagged by kind: commands,
+/// selections, control groups, repeats of the previous command
+/// (`CommandManagerState`), and re-issuing it on a new unit
 /// (`CmdUpdateTargetUnit`). Camera moves and `CmdUpdateTargetPoint` are not
 /// counted; fitting every combination against Blizzard's own numbers for an
 /// 8-player fixture picked this set, matching within a few percent.
-fn counts_as_action(event: &ReplayGameEvent) -> bool {
-    matches!(
-        event,
-        ReplayGameEvent::Cmd(_)
-            | ReplayGameEvent::SelectionDelta(_)
-            | ReplayGameEvent::ControlGroupUpdate(_)
-            | ReplayGameEvent::CommandManagerState(_)
-            | ReplayGameEvent::CmdUpdateTargetUnit(_)
-    )
+fn action_kind(event: &ReplayGameEvent) -> Option<ActionKind> {
+    match event {
+        ReplayGameEvent::Cmd(_) => Some(ActionKind::Command),
+        ReplayGameEvent::SelectionDelta(_) => Some(ActionKind::Selection),
+        ReplayGameEvent::ControlGroupUpdate(_) => Some(ActionKind::ControlGroup),
+        ReplayGameEvent::CommandManagerState(_) => Some(ActionKind::Repeat),
+        ReplayGameEvent::CmdUpdateTargetUnit(_) => Some(ActionKind::Retarget),
+        _ => None,
+    }
+}
+
+/// Tracker `PlayerStats` samples for kept players. A replay without a
+/// tracker stream (or one that fails to decode) yields no samples; the
+/// macro panels then show their empty state rather than failing the load.
+fn read_stats(path_str: &str, mpq: &s2protocol::MPQ, contents: &[u8], players: &[Player]) -> Vec<StatsSample> {
+    let Ok(events) = s2protocol::read_tracker_events(path_str, mpq, contents) else {
+        return Vec::new();
+    };
+    let mut game_loop = 0i64;
+    let mut out = Vec::new();
+    for ev in &events {
+        game_loop += i64::from(ev.delta);
+        let ReplayTrackerEvent::PlayerStats(s) = &ev.event else {
+            continue;
+        };
+        if !players.iter().any(|p| p.player_id == s.player_id) {
+            continue;
+        }
+        let st = &s.stats;
+        out.push(StatsSample {
+            player_id: s.player_id,
+            game_loop,
+            minerals_rate: st.minerals_collection_rate,
+            vespene_rate: st.vespene_collection_rate,
+            minerals_unspent: st.minerals_current,
+            vespene_unspent: st.vespene_current,
+            workers: st.workers_active_count,
+            supply_used: f64::from(st.food_used),
+            supply_made: f64::from(st.food_made),
+            army_minerals: st.minerals_used_current_army,
+            army_vespene: st.vespene_used_current_army,
+            lost_minerals: st.minerals_lost_army,
+            lost_vespene: st.vespene_lost_army,
+        });
+    }
+    out
 }
 
 /// Clan tags are stored as pre-escaped markup, e.g. `&lt;CLAN&gt;<sp/>Name`.
@@ -231,22 +307,19 @@ mod tests {
     use s2protocol::game_events::GameSTriggerKeyPressedEvent;
 
     #[test]
-    fn trigger_events_do_not_count() {
+    fn trigger_events_have_no_kind() {
         let ev = ReplayGameEvent::TriggerKeyPressed(GameSTriggerKeyPressedEvent { m_key: 0, m_flags: 0 });
-        assert!(!counts_as_action(&ev));
+        assert_eq!(action_kind(&ev), None);
     }
 
     #[test]
-    fn repeated_commands_count_as_actions() {
-        // Since patch 2.0.8 a repeat of the previous command (e.g. pressing Z
-        // five times) is stored as a CommandManagerState event, not a Cmd.
-        // Blizzard's APM counts each repeat; so must we.
+    fn repeated_commands_are_repeat_actions() {
         use s2protocol::game_events::{GameECommandManagerState, GameSCommandManagerStateEvent};
         let ev = ReplayGameEvent::CommandManagerState(GameSCommandManagerStateEvent {
             m_state: GameECommandManagerState::EFireOnce,
             m_sequence: None,
         });
-        assert!(counts_as_action(&ev));
+        assert_eq!(action_kind(&ev), Some(ActionKind::Repeat));
     }
 
     #[test]
