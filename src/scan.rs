@@ -65,7 +65,7 @@ pub fn is_within(roots: &[PathBuf], path: &Path) -> Option<PathBuf> {
 /// descended into. This guards against a symlink or junction loop under a
 /// replay root (e.g. a directory junction pointing back at an ancestor)
 /// recursing without bound and overflowing the stack, which would abort the
-/// whole process — including a long-running `arbiter serve`.
+/// whole process.
 fn walk(dir: &Path, depth: u32, out: &mut Vec<ReplayEntry>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;

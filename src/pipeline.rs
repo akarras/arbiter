@@ -62,10 +62,11 @@ static PREVIOUS_HOOK: OnceLock<Box<PanicHook>> = OnceLock::new();
 /// Earlier code swapped the process-global hook on every `load_guarded`
 /// call: `panic::set_hook` a no-op hook, run the load, then
 /// `panic::take_hook` to restore the previous one. That swap is racy under
-/// concurrent callers (e.g. `serve::run` handling requests on multiple
-/// threads): one thread's `set_hook`/`take_hook` pair can interleave with
-/// another's, permanently discarding a hook or leaving a panic on some
-/// thread with no hook installed while the swap is mid-flight. Installing
+/// concurrent callers (e.g. multiple command invocations handled on
+/// different threads): one thread's `set_hook`/`take_hook` pair can
+/// interleave with another's, permanently discarding a hook or leaving a
+/// panic on some thread with no hook installed while the swap is
+/// mid-flight. Installing
 /// once avoids the race: the single installed hook consults a `thread_local`
 /// flag (`SILENCE`) to decide, per panic, whether to swallow it or forward
 /// it to the hook that was active before this function's first call.
