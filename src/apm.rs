@@ -3,12 +3,14 @@
 /// Game loops per real second at "Faster" speed (Legacy of the Void).
 ///
 /// Verified against the fixture `Tuonela LE (115).SC2Replay`: the MPQ's
-/// `replay.gamemetadata.json` reports `"Duration"` in real seconds as
-/// recorded by the game client, and `tests/real_replay.rs` asserts that
-/// value matches `loops_to_secs(replay.duration_loops)` (computed with this
-/// constant) to within 2 seconds. `replay::load` also rejects any replay
-/// whose `game_speed` is not "Faster" (4), since this constant only holds
-/// at that speed.
+/// `replay.gamemetadata.json` reports `"Duration": 1131`, in Blizzard's
+/// legacy "game seconds" (16 loops each at the "Normal" speed baseline), not
+/// real seconds. Converting with `replay::game_secs_to_real` (`* 16 / 22.4`)
+/// gives 1131 * 16 / 22.4 = 807.9 s, matching the 807.2 s computed from
+/// summed loops (`loops_to_secs(replay.duration_loops)`, computed with this
+/// constant) to within 2 seconds, which `tests/real_replay.rs` asserts.
+/// `replay::load` also rejects any replay whose `game_speed` is not "Faster"
+/// (4), since this constant only holds at that speed.
 pub const LOOPS_PER_SECOND: f64 = 22.4;
 /// Width of the trailing window.
 pub const WINDOW_SECS: f64 = 60.0;

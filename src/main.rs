@@ -84,6 +84,7 @@ fn run(input: &Path, output: &Path) -> Result<()> {
                 race: player.race.clone(),
                 result: player.result.clone(),
                 average: apm::average_apm(loops.len(), replay.duration_loops),
+                game_apm: player.game_apm,
                 points: apm::rolling_apm(&loops, replay.duration_loops),
             }
         })

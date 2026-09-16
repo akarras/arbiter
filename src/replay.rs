@@ -25,6 +25,7 @@ pub struct Player {
     pub race: String,
     pub team: u8,
     pub result: String,
+    pub game_apm: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,13 +42,14 @@ pub struct Replay {
     pub players: Vec<Player>,
     /// In game-loop order, only counted event types, only kept players.
     pub actions: Vec<Action>,
+    /// From replay.gamemetadata.json, written by the game client.
+    pub game_duration_secs: Option<f64>,
 }
 
 pub fn load(path: &Path) -> Result<Replay> {
     if !path.is_file() {
         bail!("replay file not found: {}", path.display());
     }
-    let path_str = path.to_str().context("replay path is not valid UTF-8")?;
 
     let init = InitData::try_from((path.to_path_buf(), 0u64)).with_context(|| {
         format!(
@@ -64,16 +66,29 @@ pub fn load(path: &Path) -> Result<Replay> {
     {
         bail!("replay was recorded at game speed {speed} (only Faster is supported)");
     }
+    let path_str = path.to_str().context("replay path is not valid UTF-8")?;
+    let (mpq, contents) = s2protocol::read_mpq(path_str)
+        .context("could not read MPQ archive: not a StarCraft II replay or the file is corrupt")?;
+
+    let metadata = read_game_metadata(&mpq, &contents);
+    let game_duration_secs = metadata.as_ref().and_then(|m| m.duration_game_secs).map(game_secs_to_real);
+    let game_apm_for = |position: usize| -> Option<f64> {
+        let id = position as u64 + 1;
+        metadata.as_ref()?.apm_by_player_id.iter().find(|(pid, _)| *pid == id).map(|(_, apm)| *apm)
+    };
+
     let players: Vec<Player> = lobby
         .iter()
-        .filter(|p| p.lobby_slot.observe == 0)
-        .filter_map(|p| {
+        .enumerate()
+        .filter(|(_, p)| p.lobby_slot.observe == 0)
+        .filter_map(|(position, p)| {
             Some(Player {
                 user_id: p.lobby_slot.user_id?,
                 name: strip_clan_markup(&p.player_details.name),
                 race: p.player_details.race.clone(),
                 team: p.player_details.team_id,
                 result: p.player_details.result.clone(),
+                game_apm: game_apm_for(position),
             })
         })
         .collect();
@@ -81,8 +96,6 @@ pub fn load(path: &Path) -> Result<Replay> {
         bail!("no players found in {}", path.display());
     }
 
-    let (mpq, contents) = s2protocol::read_mpq(path_str)
-        .context("could not read MPQ archive: not a StarCraft II replay or the file is corrupt")?;
     let events = s2protocol::read_game_events(path_str, &mpq, &contents).context(
         "could not decode game events (unsupported protocol version?): not a StarCraft II replay or the file is corrupt",
     )?;
@@ -100,7 +113,7 @@ pub fn load(path: &Path) -> Result<Replay> {
             "replay duration of {game_loop} game loops is implausible (expected 0..={MAX_DURATION_LOOPS}, i.e. up to 24 hours); the file is likely corrupt"
         );
     }
-    Ok(Replay { map, duration_loops: game_loop, players, actions })
+    Ok(Replay { map, duration_loops: game_loop, players, actions, game_duration_secs })
 }
 
 /// The event types SC2's own APM counts: commands, selections, control groups.
@@ -131,6 +144,44 @@ fn strip_clan_markup(name: &str) -> String {
     }
 }
 
+/// The parts of `replay.gamemetadata.json` we use.
+#[derive(Debug, Clone, PartialEq)]
+struct GameMetadata {
+    /// Blizzard's legacy "game seconds" (16 loops each), not real seconds.
+    duration_game_secs: Option<f64>,
+    /// (PlayerID, APM) as written by the game; PlayerID is 1-based in
+    /// `replay.details` player order. APM is per real minute.
+    apm_by_player_id: Vec<(u64, f64)>,
+}
+
+/// Game loops per legacy game second (the "Normal" speed clock).
+const LOOPS_PER_GAME_SECOND: f64 = 16.0;
+
+fn game_secs_to_real(game_secs: f64) -> f64 {
+    game_secs * LOOPS_PER_GAME_SECOND / crate::apm::LOOPS_PER_SECOND
+}
+
+fn read_game_metadata(mpq: &s2protocol::MPQ, contents: &[u8]) -> Option<GameMetadata> {
+    let (_, bytes) = mpq.read_mpq_file_sector("replay.gamemetadata.json", false, contents).ok()?;
+    parse_game_metadata(&bytes)
+}
+
+fn parse_game_metadata(bytes: &[u8]) -> Option<GameMetadata> {
+    let v: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let duration_game_secs = v.get("Duration").and_then(serde_json::Value::as_f64);
+    let apm_by_player_id = v
+        .get("Players")
+        .and_then(serde_json::Value::as_array)
+        .map(|players| {
+            players
+                .iter()
+                .filter_map(|p| Some((p.get("PlayerID")?.as_u64()?, p.get("APM")?.as_f64()?)))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(GameMetadata { duration_game_secs, apm_by_player_id })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +209,28 @@ mod tests {
     fn falls_back_to_original_name_when_stripping_would_empty_it() {
         assert_eq!(strip_clan_markup("<sp/>"), "<sp/>");
         assert_eq!(strip_clan_markup("&lt;CLAN&gt;"), "&lt;CLAN&gt;");
+    }
+
+    #[test]
+    fn parses_game_metadata_duration_and_apm() {
+        let json = br#"{"Title":"Tuonela LE","Duration":1131,"Players":[{"PlayerID":1,"APM":52.3,"MMR":3100},{"PlayerID":2,"APM":61}]}"#;
+        let meta = parse_game_metadata(json).unwrap();
+        assert_eq!(meta.duration_game_secs, Some(1131.0));
+        assert_eq!(meta.apm_by_player_id, vec![(1, 52.3), (2, 61.0)]);
+    }
+
+    #[test]
+    fn malformed_metadata_is_none() {
+        assert!(parse_game_metadata(b"not json").is_none());
+        let meta = parse_game_metadata(b"{}").unwrap();
+        assert_eq!(meta.duration_game_secs, None);
+        assert!(meta.apm_by_player_id.is_empty());
+    }
+
+    #[test]
+    fn game_seconds_convert_to_real_seconds_at_faster_speed() {
+        // 16 loops per game second, 22.4 per real second: the fixture's 1131
+        // game seconds are the 807 real seconds Arbiter computes from loops.
+        assert!((game_secs_to_real(1131.0) - 807.86).abs() < 0.01);
     }
 }

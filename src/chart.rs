@@ -11,6 +11,7 @@ pub struct Series {
     pub race: String,
     pub result: String,
     pub average: f64,
+    pub game_apm: Option<f64>,
     pub points: Vec<Point>,
 }
 
@@ -87,14 +88,19 @@ pub fn render(chart: &Chart) -> String {
     );
     html.push_str("<figure>\n<ul class=\"legend\">\n");
     for (i, s) in chart.series.iter().enumerate() {
+        let game = match s.game_apm {
+            Some(g) => format!(" &middot; game says {g:.0}"),
+            None => String::new(),
+        };
         let _ = writeln!(
             html,
-            "<li><span class=\"swatch\" style=\"background:var(--series-{})\"></span><span class=\"name\">{}</span><span class=\"sub\">{} &middot; {} &middot; {:.0} APM</span></li>",
+            "<li><span class=\"swatch\" style=\"background:var(--series-{})\"></span><span class=\"name\">{}</span><span class=\"sub\">{} &middot; {} &middot; {:.0} APM{}</span></li>",
             i % 8 + 1,
             escape_html(&s.name),
             escape_html(&s.race),
             escape_html(&s.result),
-            s.average
+            s.average,
+            game
         );
     }
     html.push_str("</ul>\n");
@@ -353,6 +359,7 @@ mod tests {
             race: "Zerg".to_string(),
             result: "Win".to_string(),
             average: 123.4,
+            game_apm: None,
             points: apms
                 .iter()
                 .enumerate()
@@ -442,6 +449,16 @@ mod tests {
         assert!(html.contains("Win"));
         assert!(html.contains("123 APM"));
         assert!(html.contains("--series-1"));
+    }
+
+    #[test]
+    fn legend_shows_game_apm_when_present() {
+        let mut s = series("Bob", &[60.0]);
+        s.game_apm = Some(61.4);
+        let html = render(&chart(vec![s]));
+        assert!(html.contains("123 APM &middot; game says 61"));
+        let html = render(&chart(vec![series("Ann", &[60.0])]));
+        assert!(!html.contains("game says"));
     }
 
     #[test]
