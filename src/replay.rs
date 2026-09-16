@@ -8,6 +8,16 @@ use s2protocol::details::PlayerLobbyDetails;
 use s2protocol::game_events::ReplayGameEvent;
 use s2protocol::init_data::InitData;
 
+/// Blizzard's `GameDescription.game_speed` value for "Faster", the only
+/// speed at which `apm::LOOPS_PER_SECOND` (22.4) is the correct loop rate.
+const GAME_SPEED_FASTER: u8 = 4;
+
+/// Upper bound on a plausible replay length, in game loops: 24 hours at
+/// 22.4 loops/second. Anything beyond this (or negative) is treated as a
+/// corrupt replay rather than trusted, since `apm::rolling_apm` allocates
+/// one `Vec` slot per 5-second step of the duration.
+const MAX_DURATION_LOOPS: i64 = (24.0 * 3600.0 * 22.4) as i64;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Player {
     pub user_id: i64,
@@ -39,11 +49,21 @@ pub fn load(path: &Path) -> Result<Replay> {
     }
     let path_str = path.to_str().context("replay path is not valid UTF-8")?;
 
-    let init = InitData::try_from((path.to_path_buf(), 0u64))
-        .with_context(|| format!("could not parse replay header of {}", path.display()))?;
-    let lobby: Vec<PlayerLobbyDetails> =
-        (&init).try_into().context("could not join lobby slots to player details")?;
+    let init = InitData::try_from((path.to_path_buf(), 0u64)).with_context(|| {
+        format!(
+            "could not parse replay header of {}: not a StarCraft II replay or the file is corrupt",
+            path.display()
+        )
+    })?;
+    let lobby: Vec<PlayerLobbyDetails> = (&init).try_into().context(
+        "could not join lobby slots to player details: not a StarCraft II replay or the file is corrupt",
+    )?;
     let map = lobby.first().map(|p| p.title.clone()).unwrap_or_default();
+    if let Some(speed) = lobby.first().map(|p| p.game_description.game_speed)
+        && speed != GAME_SPEED_FASTER
+    {
+        bail!("replay was recorded at game speed {speed} (only Faster is supported)");
+    }
     let players: Vec<Player> = lobby
         .iter()
         .filter(|p| p.lobby_slot.observe == 0)
@@ -61,9 +81,11 @@ pub fn load(path: &Path) -> Result<Replay> {
         bail!("no players found in {}", path.display());
     }
 
-    let (mpq, contents) = s2protocol::read_mpq(path_str).context("could not read MPQ archive")?;
-    let events = s2protocol::read_game_events(path_str, &mpq, &contents)
-        .context("could not decode game events (unsupported protocol version?)")?;
+    let (mpq, contents) = s2protocol::read_mpq(path_str)
+        .context("could not read MPQ archive: not a StarCraft II replay or the file is corrupt")?;
+    let events = s2protocol::read_game_events(path_str, &mpq, &contents).context(
+        "could not decode game events (unsupported protocol version?): not a StarCraft II replay or the file is corrupt",
+    )?;
 
     let mut game_loop = 0i64;
     let mut actions = Vec::new();
@@ -72,6 +94,11 @@ pub fn load(path: &Path) -> Result<Replay> {
         if counts_as_action(&ev.event) && players.iter().any(|p| p.user_id == ev.user_id) {
             actions.push(Action { user_id: ev.user_id, game_loop });
         }
+    }
+    if !(0..=MAX_DURATION_LOOPS).contains(&game_loop) {
+        bail!(
+            "replay duration of {game_loop} game loops is implausible (expected 0..={MAX_DURATION_LOOPS}, i.e. up to 24 hours); the file is likely corrupt"
+        );
     }
     Ok(Replay { map, duration_loops: game_loop, players, actions })
 }
@@ -89,9 +116,17 @@ fn counts_as_action(event: &ReplayGameEvent) -> bool {
 /// Clan tags are stored as pre-escaped markup, e.g. `&lt;CLAN&gt;<sp/>Name`.
 /// Strip everything up to and including the last `>` so only the player's
 /// own chosen name remains.
+///
+/// This is a narrow heuristic: it looks only for a literal `>` character and
+/// knows nothing about the markup's actual grammar, so a name that legitimately
+/// ends in `>` (or is nothing but markup) is handled by falling back to the
+/// original, unstripped name below rather than returning an empty string.
 fn strip_clan_markup(name: &str) -> String {
     match name.rfind('>') {
-        Some(pos) => name[pos + 1..].to_string(),
+        Some(pos) => {
+            let stripped = &name[pos + 1..];
+            if stripped.is_empty() { name.to_string() } else { stripped.to_string() }
+        }
         None => name.to_string(),
     }
 }
@@ -117,5 +152,11 @@ mod tests {
     fn strips_clan_tag_markup_from_names() {
         assert_eq!(strip_clan_markup("&lt;CLAN&gt;<sp/>Name"), "the user's player");
         assert_eq!(strip_clan_markup("Ferdwas"), "Ferdwas");
+    }
+
+    #[test]
+    fn falls_back_to_original_name_when_stripping_would_empty_it() {
+        assert_eq!(strip_clan_markup("<sp/>"), "<sp/>");
+        assert_eq!(strip_clan_markup("&lt;CLAN&gt;"), "&lt;CLAN&gt;");
     }
 }
