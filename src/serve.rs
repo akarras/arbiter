@@ -17,6 +17,14 @@ pub struct Req<'a> {
     pub path: &'a str,
     pub query: &'a str,
     pub body: &'a [u8],
+    /// The `Host` request header, e.g. `"127.0.0.1:8321"` (empty if absent).
+    /// Checked by `handle` to defend against DNS rebinding: even though the
+    /// server only *binds* 127.0.0.1, an attacker's page can still point a
+    /// hostname it controls at 127.0.0.1 and have a victim's browser send
+    /// same-origin requests there, which the browser will happily let the
+    /// page's script read the response to unless the server itself checks
+    /// the `Host` header.
+    pub host: &'a str,
 }
 
 pub struct Resp {
@@ -26,12 +34,35 @@ pub struct Resp {
 }
 
 pub fn handle(req: &Req, roots: &[PathBuf]) -> Resp {
+    if !host_is_allowed(req.host) {
+        return text(403, "forbidden host");
+    }
     match (req.method, req.path) {
         ("GET", "/") => html(list_page::render(&scan::find_replays(roots), roots)),
         ("GET", "/replay") => replay_route(req.query, roots),
         ("POST", "/open") => open_route(req.body),
         _ => text(404, "not found"),
     }
+}
+
+/// Rejects any `Host` header that is not (case-insensitively, ignoring any
+/// `:port` suffix) `127.0.0.1`, `localhost`, or `[::1]`, to defend against
+/// DNS rebinding: a hostname an attacker controls can be pointed at
+/// 127.0.0.1, letting a victim's browser send same-origin requests to this
+/// server despite the socket only being bound to loopback.
+fn host_is_allowed(host: &str) -> bool {
+    // A bracketed IPv6 literal (e.g. "[::1]:8321") has colons of its own, so
+    // only strip a ":port" suffix that comes after the closing bracket;
+    // anything else (IPv4, a hostname) has at most one colon, the port's.
+    let host = if let Some(rest) = host.strip_prefix('[') {
+        match rest.find(']') {
+            Some(end) => &host[..end + 2], // include the leading '[' and the ']'
+            None => host,
+        }
+    } else {
+        host.rsplit_once(':').map_or(host, |(h, _)| h)
+    };
+    host.eq_ignore_ascii_case("127.0.0.1") || host.eq_ignore_ascii_case("localhost") || host.eq_ignore_ascii_case("[::1]")
 }
 
 fn replay_route(query: &str, roots: &[PathBuf]) -> Resp {
@@ -77,7 +108,7 @@ fn open_route(body: &[u8]) -> Resp {
 pub fn run(roots: Vec<PathBuf>, port: u16) -> Result<()> {
     let addr = format!("127.0.0.1:{port}");
     let server = tiny_http::Server::http(&addr).map_err(|e| anyhow!("could not listen on {addr}: {e}"))?;
-    println!("Listening on http://{addr}");
+    println!("Listening on http://{}", server.server_addr());
     for root in &roots {
         println!("  serving {}", root.display());
     }
@@ -91,7 +122,8 @@ pub fn run(roots: Vec<PathBuf>, port: u16) -> Result<()> {
         let method = request.method().to_string();
         let url = request.url().to_string();
         let (path, query) = url.split_once('?').unwrap_or((&url, ""));
-        let resp = handle(&Req { method: &method, path, query, body: &body }, &roots);
+        let host = request.headers().iter().find(|h| h.field.equiv("Host")).map(|h| h.value.as_str()).unwrap_or("");
+        let resp = handle(&Req { method: &method, path, query, body: &body, host }, &roots);
         respond(request, resp);
     }
     Ok(())
@@ -131,7 +163,7 @@ mod tests {
     const FIXTURE: &str = r"the local fixture replay";
 
     fn get(path: &str, query: &str, roots: &[PathBuf]) -> Resp {
-        handle(&Req { method: "GET", path, query, body: &[] }, roots)
+        handle(&Req { method: "GET", path, query, body: &[], host: "127.0.0.1:8321" }, roots)
     }
 
     fn temp_root(name: &str) -> PathBuf {
@@ -164,7 +196,7 @@ mod tests {
         assert_eq!(get("/replay", &format!("path={}", crate::percent::encode(&root.join("missing.SC2Replay").to_string_lossy())), &roots).status, 404);
         assert_eq!(get("/replay", &format!("path={}", crate::percent::encode(&outside.to_string_lossy())), &roots).status, 403);
         assert_eq!(get("/nope", "", &roots).status, 404);
-        assert_eq!(handle(&Req { method: "DELETE", path: "/", query: "", body: &[] }, &roots).status, 404);
+        assert_eq!(handle(&Req { method: "DELETE", path: "/", query: "", body: &[], host: "127.0.0.1:8321" }, &roots).status, 404);
         let _ = std::fs::remove_file(&outside);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -186,12 +218,33 @@ mod tests {
 
     #[test]
     fn open_route_handles_garbage_and_leaves_no_temp_file() {
-        let resp = handle(&Req { method: "POST", path: "/open", query: "", body: b"definitely not a replay" }, &[]);
+        let resp = handle(&Req { method: "POST", path: "/open", query: "", body: b"definitely not a replay", host: "127.0.0.1:8321" }, &[]);
         assert_eq!(resp.status, 500);
         assert!(String::from_utf8(resp.body).unwrap().contains("not a StarCraft II replay"));
         let leftovers = std::fs::read_dir(std::env::temp_dir()).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with(&format!("arbiter-open-{}-", std::process::id()))).count();
         assert_eq!(leftovers, 0);
-        assert_eq!(handle(&Req { method: "POST", path: "/open", query: "", body: &[] }, &[]).status, 400);
+        assert_eq!(handle(&Req { method: "POST", path: "/open", query: "", body: &[], host: "127.0.0.1:8321" }, &[]).status, 400);
+    }
+
+    #[test]
+    fn open_route_returns_413_for_a_body_over_the_upload_limit() {
+        let body = vec![0u8; MAX_UPLOAD + 1];
+        let resp = handle(&Req { method: "POST", path: "/open", query: "", body: &body, host: "127.0.0.1:8321" }, &[]);
+        assert_eq!(resp.status, 413);
+    }
+
+    #[test]
+    fn host_header_is_checked_against_loopback_names() {
+        let roots: Vec<PathBuf> = vec![];
+        let req = |host: &'static str| Req { method: "GET", path: "/", query: "", body: &[], host };
+        assert_eq!(handle(&req("evil.example"), &roots).status, 403);
+        assert_eq!(handle(&req(""), &roots).status, 403);
+        assert_eq!(handle(&req("localhost"), &roots).status, 200);
+        assert_eq!(handle(&req("LOCALHOST:8321"), &roots).status, 200);
+        assert_eq!(handle(&req("127.0.0.1"), &roots).status, 200);
+        assert_eq!(handle(&req("127.0.0.1:8321"), &roots).status, 200);
+        assert_eq!(handle(&req("[::1]"), &roots).status, 200);
+        assert_eq!(handle(&req("[::1]:8321"), &roots).status, 200);
     }
 
     #[test]

@@ -12,7 +12,7 @@ fn main() -> ExitCode {
     };
     let result = match command {
         Command::Chart { input, output } => run(&input, &output).map(|()| println!("{}", output.display())),
-        Command::Serve { dirs, port } => serve(dirs, port),
+        Command::Serve { dirs, port } => run_server(dirs, port),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -64,7 +64,7 @@ fn run(input: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
-fn serve(dirs: Vec<PathBuf>, port: u16) -> Result<()> {
+fn run_server(dirs: Vec<PathBuf>, port: u16) -> Result<()> {
     let roots = if dirs.is_empty() { scan::default_roots() } else { dirs };
     if roots.is_empty() {
         anyhow::bail!("no StarCraft II replay folders found under your profile; pass --dir <folder>");

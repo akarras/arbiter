@@ -18,7 +18,7 @@
 | Replay source for the server | Auto-detect StarCraft II replay folders under the user profile; `--dir` overrides |
 | Page layout | List page (newest first) linking to the existing chart page, plus an "Open file" button |
 | Game APM display | In the legend, side by side: `52 APM · game says 61` |
-| HTTP server | `tiny_http` 0.12 (sync, MIT), bound to `127.0.0.1` only |
+| HTTP server | `tiny_http` 0.12 (sync, MIT), bound to 127.0.0.1 and Host-checked |
 | JSON parsing | `serde_json` (already in the dependency tree via `s2protocol`) |
 
 ## Part 1: game APM comparison
