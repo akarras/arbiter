@@ -1,6 +1,14 @@
 //! Rolling APM (actions per minute) from a sorted list of game loops.
 
 /// Game loops per real second at "Faster" speed (Legacy of the Void).
+///
+/// Verified against the fixture `Tuonela LE (115).SC2Replay`: the MPQ's
+/// `replay.gamemetadata.json` reports `"Duration"` in real seconds as
+/// recorded by the game client, and `tests/real_replay.rs` asserts that
+/// value matches `loops_to_secs(replay.duration_loops)` (computed with this
+/// constant) to within 2 seconds. `replay::load` also rejects any replay
+/// whose `game_speed` is not "Faster" (4), since this constant only holds
+/// at that speed.
 pub const LOOPS_PER_SECOND: f64 = 22.4;
 /// Width of the trailing window.
 pub const WINDOW_SECS: f64 = 60.0;
@@ -21,17 +29,22 @@ pub fn loops_to_secs(game_loop: i64) -> f64 {
 /// Each sample counts actions in `(t - WINDOW_SECS, t]`, divided by
 /// `min(t, WINDOW_SECS)` minutes so the first minute is not artificially low.
 ///
-/// `action_loops` must be sorted ascending.
+/// `action_loops` must be sorted ascending. `duration_loops` is trusted to be
+/// bounded by the caller (see `replay::load`, which rejects durations beyond
+/// 24 hours of game loops); this function itself never allocates more than
+/// `duration / STEP_SECS` points and never loops unboundedly, even if
+/// `duration_loops` is negative or huge.
 pub fn rolling_apm(action_loops: &[i64], duration_loops: i64) -> Vec<Point> {
     let duration = loops_to_secs(duration_loops);
-    let mut points = Vec::new();
+    // The `+ 1e-9` matches the old loop's tolerance for floating-point
+    // round-off in `loops_to_secs`, so a duration that is meant to land
+    // exactly on a step boundary still includes that final sample.
+    let count = if duration > 0.0 { ((duration + 1e-9) / STEP_SECS).floor() as usize } else { 0 };
+    let mut points = Vec::with_capacity(count);
     let mut start = 0usize; // first index inside the window
     let mut end = 0usize; // first index after `t`
-    for i in 1.. {
+    for i in 1..=count {
         let t = i as f64 * STEP_SECS;
-        if t > duration + 1e-9 {
-            break;
-        }
         while end < action_loops.len() && loops_to_secs(action_loops[end]) <= t {
             end += 1;
         }
@@ -67,6 +80,12 @@ mod tests {
     fn empty_actions_and_zero_duration_give_no_points() {
         assert!(rolling_apm(&[], 0).is_empty());
         assert!(rolling_apm(&[100, 200], 0).is_empty());
+    }
+
+    #[test]
+    fn negative_duration_gives_no_points() {
+        assert!(rolling_apm(&[], -1).is_empty());
+        assert!(rolling_apm(&[100, 200], i64::MIN).is_empty());
     }
 
     #[test]
