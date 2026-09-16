@@ -173,25 +173,29 @@ fn render_detail(html: &mut String, chart: &Chart) {
     html.push_str("<div class=\"plot\"><svg id=\"svg-detail\" viewBox=\"0 0 960 260\" role=\"img\" aria-label=\"Player detail\"></svg><div id=\"tip-detail\" class=\"tooltip\" hidden></div></div>\n");
     html.push_str("<ul class=\"klegend\">");
     for (i, label) in crate::metrics::KIND_LABELS.iter().enumerate() {
-        let _ = write!(html, "<li><span class=\"swatch\" style=\"background:var(--series-{})\"></span>{}</li>", i + 1, label);
+        let _ = write!(html, "<li><span class=\"swatch\" style=\"background:var(--series-{})\"></span>{}</li>", i + 1, escape_html(label));
     }
     html.push_str("<li><span class=\"swatch\" style=\"background:var(--text-2)\"></span>EPM</li></ul>\n</section>\n");
 }
 
-/// Rows follow the first series' sample times; other series are aligned by index.
+/// Rows follow the sorted union of every series' sample times (deduplicated
+/// within 0.05 s), matching the JS tooltip's merged time axis rather than
+/// aligning series by index (which prints the wrong time, and `0:00`, for
+/// any series shorter than the first). Each cell is the series' nearest
+/// sample by time, left empty when that nearest sample is further away
+/// than half the series' own median sample spacing.
 fn render_table(html: &mut String, series: &[PanelSeries]) {
-    let rows = series.iter().map(|s| s.points.len()).max().unwrap_or(0);
+    let times = merged_times(series);
     html.push_str("<details class=\"table\">\n<summary>Data table</summary>\n<table>\n<tr><th>Time</th>");
     for s in series {
         let _ = write!(html, "<th>{}</th>", escape_html(&s.label));
     }
     html.push_str("</tr>\n");
-    let times = series.first().map(|s| &s.points[..]).unwrap_or(&[]);
-    for row in 0..rows {
-        let secs = times.get(row).map(|p| p.secs).unwrap_or(0.0);
-        let _ = write!(html, "<tr><td>{}</td>", fmt_time(secs));
-        for s in series {
-            match s.points.get(row) {
+    let half_spacings: Vec<f64> = series.iter().map(|s| median_spacing(&s.points) / 2.0).collect();
+    for &t in &times {
+        let _ = write!(html, "<tr><td>{}</td>", fmt_time(t));
+        for (s, &half_spacing) in series.iter().zip(&half_spacings) {
+            match nearest_within(&s.points, t, half_spacing) {
                 Some(p) => {
                     let _ = write!(html, "<td>{:.0}</td>", p.value);
                 }
@@ -201,6 +205,37 @@ fn render_table(html: &mut String, series: &[PanelSeries]) {
         html.push_str("</tr>\n");
     }
     html.push_str("</table>\n</details>\n");
+}
+
+/// Sorted union of every series' sample times, deduplicated within 0.05 s.
+fn merged_times(series: &[PanelSeries]) -> Vec<f64> {
+    let mut times: Vec<f64> = series.iter().flat_map(|s| s.points.iter().map(|p| p.secs)).collect();
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mut out: Vec<f64> = Vec::with_capacity(times.len());
+    for t in times {
+        if out.last().is_none_or(|&last| (t - last).abs() > 0.05) {
+            out.push(t);
+        }
+    }
+    out
+}
+
+/// Median gap between consecutive sample times. A series with fewer than
+/// two points has no gap to measure, so it falls back to 5 s, the panels'
+/// own sample interval (`apm::STEP_SECS`).
+fn median_spacing(points: &[Point]) -> f64 {
+    if points.len() < 2 {
+        return 5.0;
+    }
+    let mut gaps: Vec<f64> = points.windows(2).map(|w| w[1].secs - w[0].secs).collect();
+    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    gaps[gaps.len() / 2]
+}
+
+/// The point in `points` nearest `t` by time, or `None` when the nearest one
+/// is still further than `max_dist` away (or `points` is empty).
+fn nearest_within(points: &[Point], t: f64, max_dist: f64) -> Option<&Point> {
+    points.iter().min_by(|a, b| (a.secs - t).abs().partial_cmp(&(b.secs - t).abs()).unwrap()).filter(|p| (p.secs - t).abs() <= max_dist)
 }
 
 fn write_points(json: &mut String, points: &[Point]) {
@@ -337,6 +372,49 @@ mod tests {
         assert_eq!(html.matches("<details class=\"table\">").count(), 2);
         assert!(html.contains("<td>0:05</td><td>60</td><td>30</td>"));
         assert!(html.contains("<td>0:05</td><td>800</td><td>700</td>"));
+    }
+
+    #[test]
+    fn table_rows_follow_the_merged_time_axis_with_empty_cells_for_far_samples() {
+        let series = vec![
+            PanelSeries { player: 0, label: "Bob".to_string(), points: pts(&[10.0, 20.0, 30.0]) }, // secs 5, 10, 15
+            PanelSeries { player: 1, label: "Ann".to_string(), points: pts(&[40.0, 50.0]) },        // secs 5, 10
+        ];
+        let p = Panel { id: "x".to_string(), title: "X".to_string(), unit: "u".to_string(), kind: PanelKind::Lines, series };
+        let c = chart(vec!["Bob", "Ann"], vec![p], vec![]);
+        let html = render(&c);
+        assert_eq!(html.matches("<tr><td>").count(), 3, "three rows, one per merged time");
+        assert!(html.contains("<tr><td>0:05</td><td>10</td><td>40</td></tr>"));
+        assert!(html.contains("<tr><td>0:10</td><td>20</td><td>50</td></tr>"));
+        assert!(html.contains("<tr><td>0:15</td><td>30</td><td></td></tr>"), "Ann has no sample near 0:15");
+        assert!(!html.contains("<td>0:00</td>"), "no spurious row at time zero");
+    }
+
+    #[test]
+    fn player_name_cannot_close_the_json_script_block() {
+        let name = "x</script><script>alert(1)";
+        let c = chart(vec![name], vec![], vec![]);
+        let html = render(&c);
+        let marker = r#"<script id="data" type="application/json">"#;
+        let start = html.find(marker).unwrap() + marker.len();
+        let end = start + html[start..].find("</script>").unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&html[start..end]).expect("JSON block must parse; a real </script> in the name would truncate it early");
+        assert_eq!(json["players"][0]["name"], name);
+        assert!(!html[start..end].contains("</script>"), "raw </script> must never appear inside the JSON block");
+    }
+
+    #[test]
+    fn player_name_with_bare_angle_brackets_leaves_no_raw_lt_in_the_json_block() {
+        let name = "<!--<script";
+        let c = chart(vec![name], vec![], vec![]);
+        let html = render(&c);
+        let marker = r#"<script id="data" type="application/json">"#;
+        let start = html.find(marker).unwrap() + marker.len();
+        let end = start + html[start..].find("</script>").unwrap();
+        let json: serde_json::Value = serde_json::from_str(&html[start..end]).expect("JSON block must parse");
+        assert_eq!(json["players"][0]["name"], name);
+        assert!(!html[start..end].contains('<'), "no raw < inside the JSON block");
     }
 
     #[test]

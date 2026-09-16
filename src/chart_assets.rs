@@ -23,14 +23,12 @@ svg{width:100%;height:auto;display:block;user-select:none;cursor:crosshair}
 .band{fill:var(--series-8);opacity:.14}
 .label{fill:var(--text);font-size:12px}
 .xhair{stroke:var(--muted);stroke-dasharray:3 3;pointer-events:none}
-.dot{stroke:var(--surface);stroke-width:2;pointer-events:none}
 .brush{fill:var(--series-1);opacity:.12;pointer-events:none}
 .tooltip{position:absolute;top:8px;pointer-events:none;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:12px;font-variant-numeric:tabular-nums;box-shadow:0 2px 8px rgba(0,0,0,.15);white-space:nowrap}
 .tooltip .t{color:var(--text-2);margin-bottom:2px}
 .tooltip .row{display:flex;align-items:center;gap:6px}
 .klegend{display:flex;flex-wrap:wrap;gap:6px 16px;margin:6px 0 0;padding:0;list-style:none;font-size:12px;color:var(--text-2)}
 .klegend li{display:flex;align-items:center;gap:6px}
-.empty{color:var(--muted);font-size:12px;margin:8px 0 0;text-align:center}
 .empty{font-size:14px;padding:32px 0}
 .table{margin:8px 0 0;color:var(--text-2)}
 .table summary{cursor:pointer;font-size:12px}
@@ -119,7 +117,7 @@ pub const JS: &str = r#"
   function drawLines(d) {
     const {svg, panel} = d, {x0, x1} = view;
     const visible = panel.series.map(s => s.points.filter(p => p[0] >= x0 && p[0] <= x1));
-    const ymax = Math.max(1, ...visible.flat().map(p => p[1]));
+    const ymax = visible.flat().reduce((m, p) => Math.max(m, p[1]), 1);
     frame(d, ymax);
     const labelYs = [];
     panel.series.forEach((s, i) => {
@@ -134,7 +132,6 @@ pub const JS: &str = r#"
         el(svg, 'text', {x: d.sx(last[0]) + 8, y, class: 'label'}, s.label);
       }
     });
-    d.visible = visible;
   }
 
   function drawDetail(d) {
@@ -142,8 +139,6 @@ pub const JS: &str = r#"
     const det = currentDetail();
     if (!det) {
       frame(d, 1);
-      d.visible = [];
-      d.labels = [];
       return;
     }
     const {svg} = d;
@@ -156,7 +151,7 @@ pub const JS: &str = r#"
     }
     const top = cum.length ? cum[cum.length - 1] : [];
     const inView = p => p[0] >= x0 && p[0] <= x1;
-    const ymax = Math.max(1, ...top.filter(inView).map(p => p[1]), ...det.epm.filter(inView).map(p => p[1]));
+    const ymax = top.filter(inView).concat(det.epm.filter(inView)).reduce((m, p) => Math.max(m, p[1]), 1);
     frame(d, ymax);
     for (const [from, to] of det.blocks) {
       const a = Math.max(from, x0), b = Math.min(to, x1);
@@ -172,8 +167,6 @@ pub const JS: &str = r#"
     }
     const epm = det.epm.filter(inView);
     if (epm.length) el(svg, 'path', {d: pathOf(epm, d.sx, d.sy), class: 'epm'});
-    d.visible = det.breakdown.map((s, k) => cum[k]).concat([det.epm]);
-    d.labels = det.breakdown.map(s => s.label).concat(['EPM']);
   }
 
   function draw(d) {
@@ -196,7 +189,14 @@ pub const JS: &str = r#"
   const xToTime = x => view.x0 + (x - M.left) / pw * (view.x1 - view.x0);
 
   function onMove(d, e) {
-    const t = xToTime(toSvgX(d.svg, e));
+    const rawT = xToTime(toSvgX(d.svg, e));
+    // Snap to the nearest sample of the panel's first series (the first
+    // breakdown series for the detail panel) so the crosshair, the tooltip
+    // header time, and every row's nearest-sample lookup all agree on the
+    // same instant, instead of drifting with the raw mouse position.
+    const refPoints = d.kind === 'lines' ? (d.panel.series[0] ? d.panel.series[0].points : []) : (currentDetail() && currentDetail().breakdown[0] ? currentDetail().breakdown[0].points : []);
+    const snapped = nearest(refPoints, rawT);
+    const t = snapped ? snapped[0] : rawT;
     const x = d.sx(t);
     for (const o of drawables) {
       const xh = o.svg.querySelector('.xhair');
@@ -206,7 +206,7 @@ pub const JS: &str = r#"
     let rows = '<div class="t">' + fmtTime(t) + '</div>';
     if (d.kind === 'lines') {
       d.panel.series.forEach((s, i) => {
-        const p = nearest(d.visible[i], t);
+        const p = nearest(s.points, t);
         rows += '<div class="row"><span class="swatch" style="background:' + colour(s.player) + '"></span><span>' + escapeHtml(s.label) + '</span><span style="margin-left:auto;padding-left:12px">' + (p ? Math.round(p[1]) : '-') + '</span></div>';
       });
     } else {
