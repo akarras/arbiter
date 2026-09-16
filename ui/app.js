@@ -4,15 +4,24 @@
     ? { invoke: t.core.invoke, listen: t.event.listen, open: t.dialog.open }
     : window.__MOCK__;
 
+  const status = document.getElementById('status');
+
+  if (!bridge) {
+    status.textContent = 'Tauri bridge unavailable';
+    status.hidden = false;
+    return;
+  }
+
   const list = document.getElementById('list');
   const filter = document.getElementById('filter');
   const count = document.getElementById('count');
   const rootsEl = document.getElementById('roots');
+  const warning = document.getElementById('warning');
   const frame = document.getElementById('chart');
-  const status = document.getElementById('status');
 
   let rows = [];
   let selected = null;
+  let selectTimer = null;
 
   const fmtDate = s => s ? new Date(s * 1000).toLocaleString(undefined, {dateStyle: 'medium', timeStyle: 'short'}) : '';
   const fmtSize = n => Math.round(n / 1024) + ' KB';
@@ -21,6 +30,11 @@
     status.textContent = text;
     status.classList.toggle('error', !!isError);
     status.hidden = false;
+  }
+
+  function showWarning(text) {
+    warning.textContent = text;
+    warning.hidden = false;
   }
 
   function render() {
@@ -51,15 +65,18 @@
       rows = await bridge.invoke('list_replays');
       const roots = await bridge.invoke('roots');
       rootsEl.textContent = roots.length ? roots.join('\n') : 'No replay folders found. Add one, or open a file.';
+      if (selected && !rows.some(r => r.path === selected)) {
+        selected = null;
+        frame.srcdoc = '';
+        showStatus('Select a replay');
+      }
       render();
     } catch (e) {
-      showStatus('Could not list replays: ' + e, true);
+      showWarning('Could not list replays: ' + e);
     }
   }
 
-  async function select(path) {
-    selected = path;
-    render();
+  async function loadSelected(path) {
     showStatus('Parsing…');
     frame.srcdoc = '';
     try {
@@ -70,17 +87,36 @@
     }
   }
 
+  function select(path) {
+    selected = path;
+    render();
+    if (selectTimer) {
+      clearTimeout(selectTimer);
+      selectTimer = null;
+    }
+    loadSelected(path);
+  }
+
   filter.addEventListener('input', render);
 
   document.addEventListener('keydown', e => {
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    if (document.activeElement === filter) return;
     const visible = [...list.children];
     if (!visible.length) return;
     let i = visible.findIndex(li => li.dataset.path === selected);
     i = e.key === 'ArrowDown' ? Math.min(i + 1, visible.length - 1) : Math.max(i - 1, 0);
     e.preventDefault();
     visible[i].scrollIntoView({block: 'nearest'});
-    select(visible[i].dataset.path);
+
+    // Move the highlight instantly, but only fetch and render the chart
+    // once the user has paused on a row for a bit, so holding the arrow
+    // key down does not fire a `chart_html` parse per row.
+    selected = visible[i].dataset.path;
+    render();
+    if (selectTimer) clearTimeout(selectTimer);
+    const path = selected;
+    selectTimer = setTimeout(() => { selectTimer = null; loadSelected(path); }, 150);
   });
 
   document.getElementById('open').addEventListener('click', async () => {
@@ -95,11 +131,12 @@
       await bridge.invoke('add_root', {path: p});
       await reload();
     } catch (e) {
-      showStatus(String(e), true);
+      showWarning(String(e));
     }
   });
 
   bridge.listen('replays-changed', reload);
+  bridge.listen('watcher-degraded', e => showWarning(e.payload));
   window.addEventListener('focus', reload);
   reload();
 })();

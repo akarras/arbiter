@@ -21,6 +21,7 @@
   <footer>
     <p class="meta">Folders</p>
     <pre id="roots"></pre>
+    <p id="warning" class="meta warning" hidden></p>
   </footer>
 </aside>
 <main id="pane">
@@ -28,7 +29,9 @@
   <div id="status">Select a replay</div>
 </main>
 <script>
-  if (!window.__TAURI__) { document.write('<script src="mock.js"><\/script>'); }
+  if (!window.__TAURI__ && new URLSearchParams(location.search).get('mock') === '1') {
+    document.write('<script src="mock.js"><\/script>');
+  }
 </script>
 <script src="app.js"></script>
 </body>
