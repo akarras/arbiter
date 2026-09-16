@@ -51,9 +51,12 @@ pub struct StatsSample {
 }
 ```
 
-  `food_used`/`food_made` are 4096× fixed point in the raw event; the
-  implementer confirms on the fixture (a full army reads 200.0 after scaling)
-  before relying on the divisor.
+  The `s2protocol` crate already scales `food_used`/`food_made` into supply
+  units (probed on the fixture: start-of-game values 8 used / 13 made, peak
+  233 made in this custom 4v4), so no 4096 divisor is applied. Tracker
+  `delta` sums to within 14 loops of `duration_loops` on the fixture, so the
+  clock is the game-loop clock. Each player gets a sample about every 160
+  loops (~7 s).
 - Samples for players that were filtered out (observers) are dropped. A replay
   with no tracker events (very old protocol) yields an empty `stats` and the
   macro panels render their empty state.
@@ -121,7 +124,8 @@ losses panel; one `Detail` per player. Averages and game APM unchanged.
 - `replay.rs`: unit test that `ActionKind` is assigned per event variant;
   integration test on the fixture asserts stats exist for all 8 players, the
   last tracker loop is within 50 loops of `duration_loops`, every
-  `supply_made <= 200`, and workers peak above 10 for every player.
+  `supply_made` is between 0 and 400 (the fixture is a custom game that
+  exceeds the ladder cap of 200), and workers peak above 10 for every player.
 - `metrics.rs`: synthetic tests for each function including the block-merge
   rule and the EPM 0.25 s rule.
 - `chart.rs`: JSON contains one entry per panel and per detail, tables per
