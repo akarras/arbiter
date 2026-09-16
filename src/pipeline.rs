@@ -11,10 +11,28 @@ use crate::{apm, chart, replay};
 
 pub fn chart_html(path: &Path) -> Result<String> {
     let replay = load_guarded(path)?;
-    let series = replay
+    let players: Vec<chart::PlayerLegend> = replay
         .players
         .iter()
-        .map(|player| {
+        .map(|player| chart::PlayerLegend {
+            name: player.name.clone(),
+            race: player.race.clone(),
+            result: player.result.clone(),
+            // Measured over the player's own time in the game, as Blizzard
+            // does, so the average is not diluted by minutes they were not
+            // playing.
+            average: apm::average_apm(
+                replay.actions.iter().filter(|a| a.user_id == player.user_id).count(),
+                player.last_event_loop,
+            ),
+            game_apm: player.game_apm,
+        })
+        .collect();
+    let apm_series = replay
+        .players
+        .iter()
+        .enumerate()
+        .map(|(i, player)| {
             let mut loops: Vec<i64> = replay
                 .actions
                 .iter()
@@ -22,24 +40,27 @@ pub fn chart_html(path: &Path) -> Result<String> {
                 .map(|a| a.game_loop)
                 .collect();
             loops.sort_unstable();
-            chart::Series {
-                name: player.name.clone(),
-                race: player.race.clone(),
-                result: player.result.clone(),
-                // Measured over the player's own time in the game, as Blizzard
-                // does, so the line ends when they leave and the average is
-                // not diluted by minutes they were not playing.
-                average: apm::average_apm(loops.len(), player.last_event_loop),
-                game_apm: player.game_apm,
+            chart::PanelSeries {
+                player: i,
+                label: player.name.clone(),
                 points: apm::rolling_apm(&loops, player.last_event_loop),
             }
         })
         .collect();
+    let panels = vec![chart::Panel {
+        id: "apm".to_string(),
+        title: "APM".to_string(),
+        unit: "actions per minute".to_string(),
+        kind: chart::PanelKind::Lines,
+        series: apm_series,
+    }];
     Ok(chart::render(&chart::Chart {
         title: format!("APM - {}", replay.map),
         map: replay.map.clone(),
         duration_secs: apm::loops_to_secs(replay.duration_loops),
-        series,
+        players,
+        panels,
+        details: vec![],
     }))
 }
 

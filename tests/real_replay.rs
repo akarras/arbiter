@@ -86,10 +86,10 @@ fn loads_the_local_replay_when_present() {
         + r#"<script id="data" type="application/json">"#.len();
     let end = start + html[start..].find("</script>").unwrap();
     let data: serde_json::Value = serde_json::from_str(&html[start..end]).unwrap();
-    let series = data["series"].as_array().unwrap();
+    let series = data["panels"][0]["series"].as_array().unwrap();
     assert_eq!(series.len(), replay.players.len());
     for (s, p) in series.iter().zip(&replay.players) {
-        assert_eq!(s["name"].as_str().unwrap(), p.name);
+        assert_eq!(s["label"].as_str().unwrap(), p.name);
         let last_secs = s["points"].as_array().unwrap().last().unwrap()[0].as_f64().unwrap();
         let active_secs = apm::loops_to_secs(p.last_event_loop);
         assert!(
