@@ -52,7 +52,7 @@
       name.textContent = r.name;
       const info = document.createElement('span');
       info.className = 'info';
-      info.textContent = fmtDate(r.modified_secs) + ' · ' + fmtSize(r.size);
+      info.textContent = r.info;
       li.append(name, info);
       li.addEventListener('click', () => select(r.path));
       list.appendChild(li);
@@ -63,6 +63,9 @@
   async function reload() {
     try {
       rows = await bridge.invoke('list_replays');
+      // Format once per reload: toLocaleString costs ~0.04 ms per call, which
+      // adds up over thousands of rows if done on every render.
+      for (const r of rows) r.info = fmtDate(r.modified_secs) + ' · ' + fmtSize(r.size);
       const roots = await bridge.invoke('roots');
       rootsEl.textContent = roots.length ? roots.join('\n') : 'No replay folders found. Add one, or open a file.';
       if (selected && !rows.some(r => r.path === selected)) {
@@ -87,9 +90,15 @@
     }
   }
 
-  function select(path) {
+  // Move the highlight without rebuilding the list: with thousands of rows a
+  // full render is a visible hitch on every click.
+  function highlight(path) {
     selected = path;
-    render();
+    for (const li of list.children) li.classList.toggle('selected', li.dataset.path === path);
+  }
+
+  function select(path) {
+    highlight(path);
     if (selectTimer) {
       clearTimeout(selectTimer);
       selectTimer = null;
@@ -112,8 +121,7 @@
     // Move the highlight instantly, but only fetch and render the chart
     // once the user has paused on a row for a bit, so holding the arrow
     // key down does not fire a `chart_html` parse per row.
-    selected = visible[i].dataset.path;
-    render();
+    highlight(visible[i].dataset.path);
     if (selectTimer) clearTimeout(selectTimer);
     const path = selected;
     selectTimer = setTimeout(() => { selectTimer = null; loadSelected(path); }, 150);
