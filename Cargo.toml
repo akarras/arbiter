@@ -3,6 +3,9 @@ name = "arbiter"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = ["src-tauri"]
+
 [dependencies]
 anyhow = "1"
 s2protocol = { version = "3.5", default-features = false, features = ["tracing_off"] }
