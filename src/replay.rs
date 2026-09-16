@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use s2protocol::details::PlayerLobbyDetails;
 use s2protocol::game_events::ReplayGameEvent;
 use s2protocol::init_data::InitData;
-use s2protocol::tracker_events::ReplayTrackerEvent;
+use s2protocol::tracker_events::{PlayerStatsEvent, ReplayTrackerEvent, TrackerEvent};
 
 /// Blizzard's `GameDescription.game_speed` value for "Faster", the only
 /// speed at which `apm::LOOPS_PER_SECOND` (22.4) is the correct loop rate.
@@ -30,8 +30,12 @@ pub struct Player {
     /// Game loop of this player's last event of any kind: the end of their
     /// time in the game, which is the denominator Blizzard uses for APM.
     pub last_event_loop: i64,
-    /// 1-based index in `replay.details` player order; tracker events and
-    /// the game metadata use this id.
+    /// The tracker stream's own player id, resolved by `resolve_player_ids`
+    /// from the `PlayerSetupEvent` whose `user_id` matches this player;
+    /// falls back to the player's 1-based position in `replay.details`
+    /// order when no tracker `PlayerSetup` event matches it (e.g. the
+    /// replay has no tracker stream at all). Tracker samples and the game
+    /// metadata's APM are keyed by this id.
     pub player_id: u8,
 }
 
@@ -112,7 +116,6 @@ pub fn load(path: &Path) -> Result<Replay> {
 
     let metadata = read_game_metadata(&mpq, &contents);
     let game_duration_secs = metadata.as_ref().and_then(|m| m.duration_game_secs).map(game_secs_to_real);
-    let game_apm = game_apm_by_position(metadata.as_ref(), lobby.len());
 
     let mut players: Vec<Player> = lobby
         .iter()
@@ -125,7 +128,7 @@ pub fn load(path: &Path) -> Result<Replay> {
                 race: p.player_details.race.clone(),
                 team: p.player_details.team_id,
                 result: p.player_details.result.clone(),
-                game_apm: game_apm[position],
+                game_apm: None,
                 last_event_loop: 0,
                 player_id: position as u8 + 1,
             })
@@ -133,6 +136,23 @@ pub fn load(path: &Path) -> Result<Replay> {
         .collect();
     if players.is_empty() {
         bail!("no players found in {}", path.display());
+    }
+
+    // The tracker stream's `PlayerSetup` events are the authoritative
+    // user_id -> player_id mapping; resolve ids from them (fail-soft to an
+    // empty `Vec`, and so positional ids, when the replay has no tracker
+    // stream or it fails to decode) before using `player_id` for anything.
+    let tracker_events = s2protocol::read_tracker_events(path_str, &mpq, &contents).unwrap_or_default();
+    let setups: Vec<(u8, Option<i64>)> = tracker_events
+        .iter()
+        .filter_map(|ev| match &ev.event {
+            ReplayTrackerEvent::PlayerSetup(s) => Some((s.player_id, s.user_id.map(i64::from))),
+            _ => None,
+        })
+        .collect();
+    resolve_player_ids(&setups, &mut players);
+    for player in &mut players {
+        player.game_apm = apm_for_player_id(metadata.as_ref(), player.player_id);
     }
 
     let events = s2protocol::read_game_events(path_str, &mpq, &contents).context(
@@ -156,8 +176,22 @@ pub fn load(path: &Path) -> Result<Replay> {
             "replay duration of {game_loop} game loops is implausible (expected 0..={MAX_DURATION_LOOPS}, i.e. up to 24 hours); the file is likely corrupt"
         );
     }
-    let stats = read_stats(path_str, &mpq, &contents, &players);
+    let stats = stats_from_tracker_events(&tracker_events, &players);
     Ok(Replay { map, duration_loops: game_loop, players, actions, game_duration_secs, stats })
+}
+
+/// Resolves each player's tracker `player_id` from the authoritative
+/// `PlayerSetup` events rather than trusting lobby position. `setups` is
+/// `(player_id, user_id)` per tracker `PlayerSetupEvent`; a player whose
+/// `user_id` matches no setup's `user_id` keeps the positional id `load`
+/// assigned it (e.g. no tracker stream, or this player has no matching
+/// setup event).
+pub(crate) fn resolve_player_ids(setups: &[(u8, Option<i64>)], players: &mut [Player]) {
+    for player in players.iter_mut() {
+        if let Some((player_id, _)) = setups.iter().find(|(_, user_id)| *user_id == Some(player.user_id)) {
+            player.player_id = *player_id;
+        }
+    }
 }
 
 /// The event types SC2's own APM counts, tagged by kind: commands,
@@ -177,16 +211,14 @@ fn action_kind(event: &ReplayGameEvent) -> Option<ActionKind> {
     }
 }
 
-/// Tracker `PlayerStats` samples for kept players. A replay without a
-/// tracker stream (or one that fails to decode) yields no samples; the
-/// macro panels then show their empty state rather than failing the load.
-fn read_stats(path_str: &str, mpq: &s2protocol::MPQ, contents: &[u8], players: &[Player]) -> Vec<StatsSample> {
-    let Ok(events) = s2protocol::read_tracker_events(path_str, mpq, contents) else {
-        return Vec::new();
-    };
+/// Tracker `PlayerStats` samples for kept players, decoded from the tracker
+/// events `load` already read (fail-soft to an empty `Vec` there when the
+/// replay has no tracker stream or it fails to decode; the macro panels
+/// then show their empty state rather than failing the load).
+fn stats_from_tracker_events(events: &[TrackerEvent], players: &[Player]) -> Vec<StatsSample> {
     let mut game_loop = 0i64;
     let mut out = Vec::new();
-    for ev in &events {
+    for ev in events {
         game_loop += i64::from(ev.delta);
         let ReplayTrackerEvent::PlayerStats(s) = &ev.event else {
             continue;
@@ -194,24 +226,29 @@ fn read_stats(path_str: &str, mpq: &s2protocol::MPQ, contents: &[u8], players: &
         if !players.iter().any(|p| p.player_id == s.player_id) {
             continue;
         }
-        let st = &s.stats;
-        out.push(StatsSample {
-            player_id: s.player_id,
-            game_loop,
-            minerals_rate: st.minerals_collection_rate,
-            vespene_rate: st.vespene_collection_rate,
-            minerals_unspent: st.minerals_current,
-            vespene_unspent: st.vespene_current,
-            workers: st.workers_active_count,
-            supply_used: f64::from(st.food_used),
-            supply_made: f64::from(st.food_made),
-            army_minerals: st.minerals_used_current_army,
-            army_vespene: st.vespene_used_current_army,
-            lost_minerals: st.minerals_lost_army,
-            lost_vespene: st.vespene_lost_army,
-        });
+        out.push(sample_from(game_loop, s));
     }
     out
+}
+
+/// Pure mapping from one tracker `PlayerStats` event to a `StatsSample`.
+fn sample_from(game_loop: i64, ev: &PlayerStatsEvent) -> StatsSample {
+    let st = &ev.stats;
+    StatsSample {
+        player_id: ev.player_id,
+        game_loop,
+        minerals_rate: st.minerals_collection_rate,
+        vespene_rate: st.vespene_collection_rate,
+        minerals_unspent: st.minerals_current,
+        vespene_unspent: st.vespene_current,
+        workers: st.workers_active_count,
+        supply_used: f64::from(st.food_used),
+        supply_made: f64::from(st.food_made),
+        army_minerals: st.minerals_used_current_army,
+        army_vespene: st.vespene_used_current_army,
+        lost_minerals: st.minerals_lost_army,
+        lost_vespene: st.vespene_lost_army,
+    }
 }
 
 /// Clan tags are stored as pre-escaped markup, e.g. `&lt;CLAN&gt;<sp/>Name`.
@@ -249,35 +286,14 @@ fn game_secs_to_real(game_secs: f64) -> f64 {
     game_secs * LOOPS_PER_GAME_SECOND / crate::apm::LOOPS_PER_SECOND
 }
 
-/// Maps `lobby` positions (indices into the `Vec<PlayerLobbyDetails>` built
-/// by `load`) to each player's Blizzard-reported APM, in `lobby` order.
-///
-/// Assumption: `apm_by_player_id`'s PlayerID is 1-based in `replay.details`
-/// `player_list` order, and when every details player has a matching lobby
-/// slot, that order coincides with `lobby`'s order, so PlayerID `i + 1`
-/// belongs at `lobby` index `i`. But `s2protocol`'s join
-/// (`Vec<PlayerLobbyDetails>::try_from`) is a `filter_map`: any details
-/// player with no matching lobby slot is dropped, which shifts every later
-/// index. When that happens, position-based lookup silently attributes the
-/// wrong APM to the wrong player. As a cheap guard against exactly that
-/// shift, this function refuses to match position-to-position at all unless
-/// `apm_by_player_id` has exactly `lobby_len` entries (returning all `None`
-/// otherwise); this does not detect every possible drop (e.g. one player
-/// dropped and one absent from the id-space could still leave the counts
-/// equal), so a mismatch is a best-effort signal, not a guarantee.
-fn game_apm_by_position(meta: Option<&GameMetadata>, lobby_len: usize) -> Vec<Option<f64>> {
-    let Some(meta) = meta else {
-        return vec![None; lobby_len];
-    };
-    if meta.apm_by_player_id.len() != lobby_len {
-        return vec![None; lobby_len];
-    }
-    (0..lobby_len)
-        .map(|position| {
-            let id = position as u64 + 1;
-            meta.apm_by_player_id.iter().find(|(pid, _)| *pid == id).map(|(_, apm)| *apm)
-        })
-        .collect()
+/// Looks up `player_id`'s Blizzard-reported APM in the game metadata.
+/// `player_id` is now resolved from the tracker's own `PlayerSetup` events
+/// (see `resolve_player_ids`), and the game metadata's `PlayerID` is that
+/// same id, so this is a direct, exact lookup rather than the positional
+/// guess the old `game_apm_by_position` made (and the length-matching guard
+/// it needed to detect a shifted lobby join no longer applies).
+fn apm_for_player_id(meta: Option<&GameMetadata>, player_id: u8) -> Option<f64> {
+    meta?.apm_by_player_id.iter().find(|(pid, _)| *pid == u64::from(player_id)).map(|(_, apm)| *apm)
 }
 
 fn read_game_metadata(mpq: &s2protocol::MPQ, contents: &[u8]) -> Option<GameMetadata> {
@@ -368,25 +384,57 @@ mod tests {
     }
 
     #[test]
-    fn exact_match_yields_values_in_order() {
-        let m = meta(vec![(1, 10.0), (2, 20.0)]);
-        assert_eq!(game_apm_by_position(Some(&m), 2), vec![Some(10.0), Some(20.0)]);
-    }
-
-    #[test]
-    fn length_mismatch_yields_all_none() {
+    fn apm_by_player_id_maps_by_id_for_a_subset_of_players() {
+        // Three metadata entries, but only two kept players (ids 1 and 3):
+        // the lookup is by id, not by position or list length.
         let m = meta(vec![(1, 10.0), (2, 20.0), (3, 30.0)]);
-        assert_eq!(game_apm_by_position(Some(&m), 2), vec![None, None]);
+        assert_eq!(apm_for_player_id(Some(&m), 1), Some(10.0));
+        assert_eq!(apm_for_player_id(Some(&m), 3), Some(30.0));
     }
 
     #[test]
-    fn missing_id_yields_none_only_at_that_position() {
-        let m = meta(vec![(1, 10.0), (3, 30.0)]);
-        assert_eq!(game_apm_by_position(Some(&m), 2), vec![Some(10.0), None]);
+    fn apm_by_player_id_is_none_for_an_unmatched_id_or_missing_metadata() {
+        let m = meta(vec![(1, 10.0)]);
+        assert_eq!(apm_for_player_id(Some(&m), 2), None);
+        assert_eq!(apm_for_player_id(None, 1), None);
+    }
+
+    fn player(user_id: i64, player_id: u8) -> Player {
+        Player {
+            user_id,
+            name: String::new(),
+            race: String::new(),
+            team: 0,
+            result: String::new(),
+            game_apm: None,
+            last_event_loop: 0,
+            player_id,
+        }
     }
 
     #[test]
-    fn no_metadata_yields_all_none() {
-        assert_eq!(game_apm_by_position(None, 3), vec![None, None, None]);
+    fn resolve_player_ids_matches_setups_in_order() {
+        let setups = vec![(1, Some(0)), (2, Some(1)), (3, Some(2))];
+        let mut players = vec![player(0, 1), player(1, 2), player(2, 3)];
+        resolve_player_ids(&setups, &mut players);
+        assert_eq!(players.iter().map(|p| p.player_id).collect::<Vec<_>>(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn resolve_player_ids_corrects_a_shifted_join() {
+        // Positional ids (1, 2) are what a lobby join that dropped an
+        // earlier details entry would produce; the tracker's own ids (2, 3)
+        // are authoritative and must win.
+        let setups = vec![(2, Some(5)), (3, Some(7))];
+        let mut players = vec![player(5, 1), player(7, 2)];
+        resolve_player_ids(&setups, &mut players);
+        assert_eq!(players.iter().map(|p| p.player_id).collect::<Vec<_>>(), vec![2, 3]);
+    }
+
+    #[test]
+    fn resolve_player_ids_keeps_positional_ids_without_setups() {
+        let mut players = vec![player(0, 1), player(1, 2)];
+        resolve_player_ids(&[], &mut players);
+        assert_eq!(players.iter().map(|p| p.player_id).collect::<Vec<_>>(), vec![1, 2]);
     }
 }

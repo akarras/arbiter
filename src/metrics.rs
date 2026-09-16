@@ -13,7 +13,7 @@ pub const KINDS: [ActionKind; 5] = [
 pub const KIND_LABELS: [&str; 5] = ["Commands", "Selections", "Control groups", "Repeats", "Retargets"];
 
 /// Two actions of the same kind closer than this are treated as spam for
-/// EPM (0.25 s at 22.4 loops/s). A heuristic, not Blizzard's definition.
+/// EPM (about 0.27 s at 22.4 loops/s). A heuristic, not Blizzard's definition.
 pub const EFFECTIVE_GAP_LOOPS: i64 = 6;
 
 /// Supply cap above which a player cannot be "blocked".
@@ -68,16 +68,21 @@ pub fn apm_breakdown(actions: &[(i64, ActionKind)], last_event_loop: i64) -> Vec
         .collect()
 }
 
-/// Loops of the actions that survive the spam rule. `actions` must be in loop order.
+/// Loops of the actions that survive the spam rule. `actions` must be in
+/// loop order. Debounces against the last *kept* action of the same kind,
+/// not merely the last-seen one: an action is dropped only when it is
+/// within `EFFECTIVE_GAP_LOOPS` of the previous kept action of the same
+/// kind, so a sustained same-kind burst still yields one kept action every
+/// `EFFECTIVE_GAP_LOOPS` loops instead of collapsing to a single action.
 pub fn effective_loops(actions: &[(i64, ActionKind)]) -> Vec<i64> {
     let mut out = Vec::with_capacity(actions.len());
-    let mut prev: Option<(i64, ActionKind)> = None;
+    let mut last_kept: Option<(i64, ActionKind)> = None;
     for &(game_loop, kind) in actions {
-        let spam = prev.is_some_and(|(pl, pk)| pk == kind && game_loop - pl <= EFFECTIVE_GAP_LOOPS);
+        let spam = last_kept.is_some_and(|(pl, pk)| pk == kind && game_loop - pl <= EFFECTIVE_GAP_LOOPS);
         if !spam {
             out.push(game_loop);
+            last_kept = Some((game_loop, kind));
         }
-        prev = Some((game_loop, kind));
     }
     out
 }
@@ -135,6 +140,25 @@ mod tests {
     }
 
     #[test]
+    fn supply_blocks_yields_one_interval_per_separate_run() {
+        let s = vec![
+            sample(0.0, 10.0, 15.0),  // fine
+            sample(7.0, 15.0, 15.0),  // blocked
+            sample(14.0, 15.0, 15.0), // blocked
+            sample(21.0, 16.0, 23.0), // fine (gap between blocks)
+            sample(28.0, 23.0, 23.0), // blocked
+            sample(35.0, 23.0, 23.0), // blocked
+            sample(42.0, 24.0, 31.0), // fine
+        ];
+        let blocks = supply_blocks(&s);
+        assert_eq!(blocks.len(), 2);
+        assert!((blocks[0].0 - 7.0).abs() < 0.05);
+        assert!((blocks[0].1 - 14.0).abs() < 0.05);
+        assert!((blocks[1].0 - 28.0).abs() < 0.05);
+        assert!((blocks[1].1 - 35.0).abs() < 0.05);
+    }
+
+    #[test]
     fn supply_block_running_to_the_end_is_closed() {
         let s = vec![sample(0.0, 15.0, 15.0), sample(7.0, 15.0, 15.0)];
         let blocks = supply_blocks(&s);
@@ -163,5 +187,19 @@ mod tests {
         use ActionKind::*;
         let actions = vec![(100, Selection), (103, Selection), (106, Selection), (113, Selection), (115, Command), (117, Command), (130, Command)];
         assert_eq!(effective_loops(&actions), vec![100, 113, 115, 130]);
+    }
+
+    #[test]
+    fn effective_loops_debounces_a_sustained_burst_against_the_last_kept_action() {
+        // 20 same-kind actions 3 loops apart: debouncing against the last
+        // *seen* action (the old rule) would keep only the first, since
+        // every gap is 3 <= EFFECTIVE_GAP_LOOPS. Debouncing against the
+        // last *kept* action keeps one every third action instead, since
+        // the cumulative gap (9 loops) exceeds EFFECTIVE_GAP_LOOPS (6).
+        use ActionKind::*;
+        let actions: Vec<(i64, ActionKind)> = (0..20).map(|i| (i * 3, Repeat)).collect();
+        let kept = effective_loops(&actions);
+        assert_eq!(kept, vec![0, 9, 18, 27, 36, 45, 54]);
+        assert_eq!(kept.len(), 7);
     }
 }
