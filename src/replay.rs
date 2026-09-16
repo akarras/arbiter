@@ -72,10 +72,7 @@ pub fn load(path: &Path) -> Result<Replay> {
 
     let metadata = read_game_metadata(&mpq, &contents);
     let game_duration_secs = metadata.as_ref().and_then(|m| m.duration_game_secs).map(game_secs_to_real);
-    let game_apm_for = |position: usize| -> Option<f64> {
-        let id = position as u64 + 1;
-        metadata.as_ref()?.apm_by_player_id.iter().find(|(pid, _)| *pid == id).map(|(_, apm)| *apm)
-    };
+    let game_apm = game_apm_by_position(metadata.as_ref(), lobby.len());
 
     let players: Vec<Player> = lobby
         .iter()
@@ -88,7 +85,7 @@ pub fn load(path: &Path) -> Result<Replay> {
                 race: p.player_details.race.clone(),
                 team: p.player_details.team_id,
                 result: p.player_details.result.clone(),
-                game_apm: game_apm_for(position),
+                game_apm: game_apm[position],
             })
         })
         .collect();
@@ -159,6 +156,37 @@ const LOOPS_PER_GAME_SECOND: f64 = 16.0;
 
 fn game_secs_to_real(game_secs: f64) -> f64 {
     game_secs * LOOPS_PER_GAME_SECOND / crate::apm::LOOPS_PER_SECOND
+}
+
+/// Maps `lobby` positions (indices into the `Vec<PlayerLobbyDetails>` built
+/// by `load`) to each player's Blizzard-reported APM, in `lobby` order.
+///
+/// Assumption: `apm_by_player_id`'s PlayerID is 1-based in `replay.details`
+/// `player_list` order, and when every details player has a matching lobby
+/// slot, that order coincides with `lobby`'s order, so PlayerID `i + 1`
+/// belongs at `lobby` index `i`. But `s2protocol`'s join
+/// (`Vec<PlayerLobbyDetails>::try_from`) is a `filter_map`: any details
+/// player with no matching lobby slot is dropped, which shifts every later
+/// index. When that happens, position-based lookup silently attributes the
+/// wrong APM to the wrong player. As a cheap guard against exactly that
+/// shift, this function refuses to match position-to-position at all unless
+/// `apm_by_player_id` has exactly `lobby_len` entries (returning all `None`
+/// otherwise); this does not detect every possible drop (e.g. one player
+/// dropped and one absent from the id-space could still leave the counts
+/// equal), so a mismatch is a best-effort signal, not a guarantee.
+fn game_apm_by_position(meta: Option<&GameMetadata>, lobby_len: usize) -> Vec<Option<f64>> {
+    let Some(meta) = meta else {
+        return vec![None; lobby_len];
+    };
+    if meta.apm_by_player_id.len() != lobby_len {
+        return vec![None; lobby_len];
+    }
+    (0..lobby_len)
+        .map(|position| {
+            let id = position as u64 + 1;
+            meta.apm_by_player_id.iter().find(|(pid, _)| *pid == id).map(|(_, apm)| *apm)
+        })
+        .collect()
 }
 
 fn read_game_metadata(mpq: &s2protocol::MPQ, contents: &[u8]) -> Option<GameMetadata> {
@@ -232,5 +260,32 @@ mod tests {
         // 16 loops per game second, 22.4 per real second: the fixture's 1131
         // game seconds are the 807 real seconds Arbiter computes from loops.
         assert!((game_secs_to_real(1131.0) - 807.86).abs() < 0.01);
+    }
+
+    fn meta(apm_by_player_id: Vec<(u64, f64)>) -> GameMetadata {
+        GameMetadata { duration_game_secs: None, apm_by_player_id }
+    }
+
+    #[test]
+    fn exact_match_yields_values_in_order() {
+        let m = meta(vec![(1, 10.0), (2, 20.0)]);
+        assert_eq!(game_apm_by_position(Some(&m), 2), vec![Some(10.0), Some(20.0)]);
+    }
+
+    #[test]
+    fn length_mismatch_yields_all_none() {
+        let m = meta(vec![(1, 10.0), (2, 20.0), (3, 30.0)]);
+        assert_eq!(game_apm_by_position(Some(&m), 2), vec![None, None]);
+    }
+
+    #[test]
+    fn missing_id_yields_none_only_at_that_position() {
+        let m = meta(vec![(1, 10.0), (3, 30.0)]);
+        assert_eq!(game_apm_by_position(Some(&m), 2), vec![Some(10.0), None]);
+    }
+
+    #[test]
+    fn no_metadata_yields_all_none() {
+        assert_eq!(game_apm_by_position(None, 3), vec![None, None, None]);
     }
 }
