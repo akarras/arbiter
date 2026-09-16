@@ -24,6 +24,9 @@ pub fn decode(s: &str) -> Option<String> {
         match bytes[i] {
             b'%' => {
                 let hex = bytes.get(i + 1..i + 3)?;
+                if !hex.iter().all(u8::is_ascii_hexdigit) {
+                    return None;
+                }
                 let v = u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?;
                 out.push(v);
                 i += 3;
@@ -57,5 +60,6 @@ mod tests {
         assert_eq!(decode("%C3%A7").unwrap(), "ç");
         assert!(decode("%zz").is_none());
         assert!(decode("%C3").is_none(), "invalid utf-8");
+        assert!(decode("%+1").is_none(), "'+' is not a hex digit, even though from_str_radix would accept it as a sign");
     }
 }

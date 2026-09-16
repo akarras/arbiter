@@ -1,7 +1,9 @@
 //! Replay path in, chart HTML out. Shared by the CLI and the server.
 
+use std::cell::Cell;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
+use std::sync::OnceLock;
 
 use anyhow::{Result, anyhow};
 
@@ -39,16 +41,56 @@ pub fn chart_html(path: &Path, back_link: bool) -> Result<String> {
     }))
 }
 
+thread_local! {
+    /// While set, the process-wide panic hook installed by
+    /// `ensure_hook_installed` swallows panics on this thread instead of
+    /// forwarding them to whatever hook was active before Arbiter's own.
+    static SILENCE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A process panic hook, as accepted by `std::panic::set_hook`.
+type PanicHook = dyn Fn(&panic::PanicHookInfo<'_>) + Sync + Send;
+
+/// The panic hook that was active before `ensure_hook_installed` first ran,
+/// captured once so panics that are not being silenced still reach it.
+static PREVIOUS_HOOK: OnceLock<Box<PanicHook>> = OnceLock::new();
+
+/// Installs Arbiter's panic hook exactly once for the life of the process.
+///
+/// Earlier code swapped the process-global hook on every `load_guarded`
+/// call: `panic::set_hook` a no-op hook, run the load, then
+/// `panic::take_hook` to restore the previous one. That swap is racy under
+/// concurrent callers (e.g. `serve::run` handling requests on multiple
+/// threads): one thread's `set_hook`/`take_hook` pair can interleave with
+/// another's, permanently discarding a hook or leaving a panic on some
+/// thread with no hook installed while the swap is mid-flight. Installing
+/// once avoids the race: the single installed hook consults a `thread_local`
+/// flag (`SILENCE`) to decide, per panic, whether to swallow it or forward
+/// it to the hook that was active before this function's first call.
+fn ensure_hook_installed() {
+    PREVIOUS_HOOK.get_or_init(|| {
+        let previous = panic::take_hook();
+        panic::set_hook(Box::new(|info| {
+            let silenced = SILENCE.with(Cell::get);
+            if !silenced && let Some(previous) = PREVIOUS_HOOK.get() {
+                previous(info);
+            }
+        }));
+        previous
+    });
+}
+
 /// `s2protocol` (and the `nom-mpq` crate it wraps) can panic on malformed
 /// input instead of returning an error: `.expect(...)` when replay user data
 /// is missing, `assert_eq!` on the replay signature, `.unwrap()` on file
 /// reads. To keep the exit-1 contract (one `error: ...` line, no panic
-/// backtrace) we run the load behind `catch_unwind` with a silenced panic
-/// hook, converting any unwind into a plain error.
+/// backtrace) we run the load behind `catch_unwind` with this thread's
+/// panics silenced, converting any unwind into a plain error.
 fn load_guarded(path: &Path) -> Result<replay::Replay> {
-    panic::set_hook(Box::new(|_| {}));
+    ensure_hook_installed();
+    SILENCE.with(|s| s.set(true));
     let result = panic::catch_unwind(AssertUnwindSafe(|| replay::load(path)));
-    let _ = panic::take_hook(); // restore the default hook
+    SILENCE.with(|s| s.set(false));
     match result {
         Ok(replay_result) => replay_result,
         Err(payload) => {

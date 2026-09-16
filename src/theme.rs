@@ -1,6 +1,7 @@
 //! Shared page chrome: color tokens, body/header/table styles, and link
-//! styling. Used by both the chart page and (eventually) the server's
-//! replay-listing page. Chart-only rules live in `chart::CHART_CSS`.
+//! styling. Used by both the chart page (`chart::render`) and the server's
+//! replay-listing page (`list_page::render`). Chart-only rules live alongside
+//! `chart::render`; list-page-only rules alongside `list_page::render`.
 
 pub const CSS: &str = r#"
 .viz-root{color-scheme:light;
