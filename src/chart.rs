@@ -21,7 +21,6 @@ pub struct Chart {
     pub map: String,
     pub duration_secs: f64,
     pub series: Vec<Series>,
-    pub back_link: bool,
 }
 
 pub fn escape_html(s: &str) -> String {
@@ -82,9 +81,6 @@ pub fn render(chart: &Chart) -> String {
         CHART_CSS
     );
     html.push_str("<main class=\"viz-root\">\n<header>\n");
-    if chart.back_link {
-        html.push_str("<p class=\"back\"><a href=\"/\">&larr; All replays</a></p>\n");
-    }
     let _ = writeln!(html, "<h1>{}</h1>", escape_html(&chart.map));
     let _ = writeln!(
         html,
@@ -355,17 +351,7 @@ mod tests {
     }
 
     fn chart(series: Vec<Series>) -> Chart {
-        Chart { title: "APM".to_string(), map: "Tuonela LE".to_string(), duration_secs: 15.0, series, back_link: false }
-    }
-
-    #[test]
-    fn back_link_is_rendered_only_when_requested() {
-        let mut c = chart(vec![series("Bob", &[60.0])]);
-        assert!(!render(&c).contains("All replays"));
-        c.back_link = true;
-        let html = render(&c);
-        assert!(html.contains(r#"<a href="/">&larr; All replays</a>"#));
-        assert!(html.contains("--series-1"), "theme tokens still present");
+        Chart { title: "APM".to_string(), map: "Tuonela LE".to_string(), duration_secs: 15.0, series }
     }
 
     #[test]

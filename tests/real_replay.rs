@@ -67,7 +67,7 @@ fn loads_the_local_replay_when_present() {
     );
 
     // Each player's line must end when they stop acting, not at the replay's end.
-    let html = arbiter::pipeline::chart_html(path, false).expect("chart renders");
+    let html = arbiter::pipeline::chart_html(path).expect("chart renders");
     let start = html.find(r#"<script id="data" type="application/json">"#).unwrap()
         + r#"<script id="data" type="application/json">"#.len();
     let end = start + html[start..].find("</script>").unwrap();

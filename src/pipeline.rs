@@ -1,4 +1,4 @@
-//! Replay path in, chart HTML out. Shared by the CLI and the server.
+//! Replay path in, chart HTML out.
 
 use std::cell::Cell;
 use std::panic::{self, AssertUnwindSafe};
@@ -9,7 +9,7 @@ use anyhow::{Result, anyhow};
 
 use crate::{apm, chart, replay};
 
-pub fn chart_html(path: &Path, back_link: bool) -> Result<String> {
+pub fn chart_html(path: &Path) -> Result<String> {
     let replay = load_guarded(path)?;
     let series = replay
         .players
@@ -40,7 +40,6 @@ pub fn chart_html(path: &Path, back_link: bool) -> Result<String> {
         map: replay.map.clone(),
         duration_secs: apm::loops_to_secs(replay.duration_loops),
         series,
-        back_link,
     }))
 }
 
@@ -128,7 +127,7 @@ mod tests {
         input.push(format!("arbiter-not-a-replay-{}.SC2Replay", std::process::id()));
         std::fs::write(&input, b"not a replay").expect("write temp file");
 
-        let result = chart_html(&input, false);
+        let result = chart_html(&input);
 
         let _ = std::fs::remove_file(&input);
 

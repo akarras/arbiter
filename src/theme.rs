@@ -1,7 +1,5 @@
 //! Shared page chrome: color tokens, body/header/table styles, and link
-//! styling. Used by both the chart page (`chart::render`) and the server's
-//! replay-listing page (`list_page::render`). Chart-only rules live alongside
-//! `chart::render`; list-page-only rules alongside `list_page::render`.
+//! styling. Used by the chart page (`chart::render`).
 
 pub const CSS: &str = r#"
 .viz-root{color-scheme:light;
@@ -20,7 +18,6 @@ header{max-width:1040px;margin:0 auto}
 header h1{font-size:20px;font-weight:600;margin:0 0 4px}
 .meta{color:var(--text-2);margin:0 0 16px}
 a{color:var(--series-1)}
-.back{margin:0 0 8px;font-size:13px}
 .table{max-width:1040px;margin:16px auto 0;color:var(--text-2)}
 .table summary{cursor:pointer}
 table{border-collapse:collapse;margin-top:8px;font-variant-numeric:tabular-nums}
