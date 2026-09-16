@@ -29,7 +29,7 @@ svg{width:100%;height:auto;display:block;user-select:none;cursor:crosshair}
 .tooltip .row{display:flex;align-items:center;gap:6px}
 .klegend{display:flex;flex-wrap:wrap;gap:6px 16px;margin:6px 0 0;padding:0;list-style:none;font-size:12px;color:var(--text-2)}
 .klegend li{display:flex;align-items:center;gap:6px}
-.empty{font-size:14px;padding:32px 0}
+.empty{color:var(--muted);font-size:14px;margin:8px 0 0;text-align:center;padding:32px 0}
 .table{margin:8px 0 0;color:var(--text-2)}
 .table summary{cursor:pointer;font-size:12px}
 table{border-collapse:collapse;margin-top:8px;font-variant-numeric:tabular-nums;font-size:12px}
