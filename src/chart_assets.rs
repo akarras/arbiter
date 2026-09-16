@@ -2,7 +2,6 @@
 //! `chart.rs` so each file has one job.
 
 pub const CHART_CSS: &str = r#"
-figure{margin:0 auto;max-width:1040px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px}
 .legend{list-style:none;display:flex;flex-wrap:wrap;gap:8px 24px;margin:0 0 4px;padding:0;max-width:1040px;margin-left:auto;margin-right:auto}
 .legend li{display:flex;align-items:center;gap:8px}
 .swatch{width:12px;height:12px;border-radius:3px;display:inline-block;flex:none}
@@ -31,7 +30,7 @@ svg{width:100%;height:auto;display:block;user-select:none;cursor:crosshair}
 .tooltip .row{display:flex;align-items:center;gap:6px}
 .klegend{display:flex;flex-wrap:wrap;gap:6px 16px;margin:6px 0 0;padding:0;list-style:none;font-size:12px;color:var(--text-2)}
 .klegend li{display:flex;align-items:center;gap:6px}
-.hint,.empty{color:var(--muted);font-size:12px;margin:8px 0 0;text-align:center}
+.empty{color:var(--muted);font-size:12px;margin:8px 0 0;text-align:center}
 .empty{font-size:14px;padding:32px 0}
 .table{margin:8px 0 0;color:var(--text-2)}
 .table summary{cursor:pointer;font-size:12px}
@@ -51,7 +50,12 @@ pub const JS: &str = r#"
   const colour = i => 'var(--series-' + (i % 8 + 1) + ')';
   const KIND_COLOURS = [1, 2, 3, 4, 5].map(colour);
   let view = {x0: 0, x1: data.duration};
-  let detailPlayer = 0;
+  const sel = document.getElementById('detail-player');
+  // `detailPlayer` is a player index (matches `Detail.player`), not an
+  // index into `data.details` — the two can differ, so every lookup goes
+  // through `currentDetail()` rather than `data.details[detailPlayer]`.
+  let detailPlayer = sel ? +sel.value : (data.details[0] ? data.details[0].player : 0);
+  const currentDetail = () => data.details.find(x => x.player === detailPlayer);
   const escapeHtml = s => s.replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
   const fmtTime = s => { s = Math.round(s); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
   const niceStep = (range, target) => {
@@ -74,6 +78,13 @@ pub const JS: &str = r#"
   }
   const detailSvg = document.getElementById('svg-detail');
   if (detailSvg && data.details.length) drawables.push({svg: detailSvg, tip: document.getElementById('tip-detail'), kind: 'detail'});
+  // Registered once per drawable here, not inside `draw`: `draw` clears the
+  // svg's innerHTML on every redraw, which does not remove a listener bound
+  // to the svg element itself, so binding it inside `draw` would stack a
+  // new handler on every zoom/reset.
+  for (const d of drawables) {
+    d.svg.addEventListener('dblclick', () => { view = {x0: 0, x1: data.duration}; hideHover(); drawAll(); });
+  }
 
   function el(svg, tag, attrs, text) {
     const e = document.createElementNS(NS, tag);
@@ -127,8 +138,15 @@ pub const JS: &str = r#"
   }
 
   function drawDetail(d) {
-    const {svg} = d, {x0, x1} = view;
-    const det = data.details[detailPlayer];
+    const {x0, x1} = view;
+    const det = currentDetail();
+    if (!det) {
+      frame(d, 1);
+      d.visible = [];
+      d.labels = [];
+      return;
+    }
+    const {svg} = d;
     const n = det.breakdown.length ? det.breakdown[0].points.length : 0;
     // cumulative stacks share the breakdown's sample times
     const cum = det.breakdown.map(() => []);
@@ -167,7 +185,6 @@ pub const JS: &str = r#"
     hit.addEventListener('mousemove', e => onMove(d, e));
     hit.addEventListener('mouseleave', hideHover);
     hit.addEventListener('mousedown', e => onDown(d, e));
-    d.svg.addEventListener('dblclick', () => { view = {x0: 0, x1: data.duration}; hideHover(); drawAll(); });
   }
   function drawAll() { drawables.forEach(draw); }
 
@@ -193,7 +210,8 @@ pub const JS: &str = r#"
         rows += '<div class="row"><span class="swatch" style="background:' + colour(s.player) + '"></span><span>' + escapeHtml(s.label) + '</span><span style="margin-left:auto;padding-left:12px">' + (p ? Math.round(p[1]) : '-') + '</span></div>';
       });
     } else {
-      const det = data.details[detailPlayer];
+      const det = currentDetail();
+      if (!det) return;
       det.breakdown.forEach((s, k) => {
         const p = nearest(s.points, t);
         rows += '<div class="row"><span class="swatch" style="background:' + KIND_COLOURS[k] + '"></span><span>' + escapeHtml(s.label) + '</span><span style="margin-left:auto;padding-left:12px">' + (p ? Math.round(p[1]) : '-') + '</span></div>';
@@ -238,7 +256,6 @@ pub const JS: &str = r#"
     window.addEventListener('mouseup', up);
   }
 
-  const sel = document.getElementById('detail-player');
   if (sel) sel.addEventListener('change', () => { detailPlayer = +sel.value; const d = drawables.find(o => o.kind === 'detail'); if (d) draw(d); });
   drawAll();
 })();
