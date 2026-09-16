@@ -1,0 +1,27 @@
+:root{color-scheme:light;
+--surface:#fcfcfb;--page:#f9f9f7;--text:#0b0b0b;--text-2:#52514e;--muted:#898781;--grid:#e1e0d9;--axis:#c3c2b7;--border:rgba(11,11,11,.10);--accent:#2a78d6;--accent-soft:rgba(42,120,214,.12)}
+@media (prefers-color-scheme:dark){:root{color-scheme:dark;
+--surface:#1a1a19;--page:#0d0d0d;--text:#fff;--text-2:#c3c2b7;--muted:#898781;--grid:#2c2c2a;--axis:#383835;--border:rgba(255,255,255,.10);--accent:#3987e5;--accent-soft:rgba(57,135,229,.18)}}
+html,body{margin:0;height:100%}
+body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:14px;background:var(--page);color:var(--text);display:flex;overflow:hidden}
+#sidebar{width:340px;flex:none;display:flex;flex-direction:column;background:var(--surface);border-right:1px solid var(--border)}
+#sidebar header{padding:14px 14px 8px;display:flex;flex-direction:column;gap:8px}
+#sidebar h1{font-size:16px;font-weight:600;margin:0}
+.actions{display:flex;gap:8px}
+button{padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--page);color:var(--text);cursor:pointer}
+button:hover{border-color:var(--accent)}
+#filter{padding:6px 10px;border:1px solid var(--border);border-radius:6px;background:var(--page);color:var(--text)}
+.meta{color:var(--text-2);font-size:12px;margin:0}
+#list{list-style:none;margin:0;padding:0;overflow-y:auto;flex:1;border-top:1px solid var(--grid)}
+#list li{padding:8px 14px;border-bottom:1px solid var(--grid);cursor:pointer;display:flex;flex-direction:column;gap:2px}
+#list li:hover{background:var(--accent-soft)}
+#list li.selected{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
+#list .name{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#list .info{color:var(--text-2);font-size:12px;font-variant-numeric:tabular-nums}
+#sidebar footer{padding:8px 14px;border-top:1px solid var(--grid)}
+#roots{margin:4px 0 0;font:11px/1.4 ui-monospace,Consolas,monospace;color:var(--muted);white-space:pre-wrap;word-break:break-all;max-height:80px;overflow:auto}
+#pane{flex:1;position:relative;min-width:0}
+#chart{width:100%;height:100%;border:0;background:var(--page)}
+#status{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-2);padding:24px;text-align:center;background:var(--page)}
+#status[hidden]{display:none}
+#status.error{color:#d03b3b}
