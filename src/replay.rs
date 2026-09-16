@@ -26,6 +26,9 @@ pub struct Player {
     pub team: u8,
     pub result: String,
     pub game_apm: Option<f64>,
+    /// Game loop of this player's last event of any kind: the end of their
+    /// time in the game, which is the denominator Blizzard uses for APM.
+    pub last_event_loop: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -74,7 +77,7 @@ pub fn load(path: &Path) -> Result<Replay> {
     let game_duration_secs = metadata.as_ref().and_then(|m| m.duration_game_secs).map(game_secs_to_real);
     let game_apm = game_apm_by_position(metadata.as_ref(), lobby.len());
 
-    let players: Vec<Player> = lobby
+    let mut players: Vec<Player> = lobby
         .iter()
         .enumerate()
         .filter(|(_, p)| p.lobby_slot.observe == 0)
@@ -86,6 +89,7 @@ pub fn load(path: &Path) -> Result<Replay> {
                 team: p.player_details.team_id,
                 result: p.player_details.result.clone(),
                 game_apm: game_apm[position],
+                last_event_loop: 0,
             })
         })
         .collect();
@@ -101,7 +105,11 @@ pub fn load(path: &Path) -> Result<Replay> {
     let mut actions = Vec::new();
     for ev in &events {
         game_loop += ev.delta;
-        if counts_as_action(&ev.event) && players.iter().any(|p| p.user_id == ev.user_id) {
+        let Some(player) = players.iter_mut().find(|p| p.user_id == ev.user_id) else {
+            continue;
+        };
+        player.last_event_loop = game_loop;
+        if counts_as_action(&ev.event) {
             actions.push(Action { user_id: ev.user_id, game_loop });
         }
     }
@@ -113,13 +121,20 @@ pub fn load(path: &Path) -> Result<Replay> {
     Ok(Replay { map, duration_loops: game_loop, players, actions, game_duration_secs })
 }
 
-/// The event types SC2's own APM counts: commands, selections, control groups.
+/// The event types SC2's own APM counts: commands, selections, control groups,
+/// repeats of the previous command (`CommandManagerState`, how the replay
+/// stores "press Z again"), and re-issuing the previous command on a new unit
+/// (`CmdUpdateTargetUnit`). Camera moves and `CmdUpdateTargetPoint` are not
+/// counted; fitting every combination against Blizzard's own numbers for an
+/// 8-player fixture picked this set, matching within a few percent.
 fn counts_as_action(event: &ReplayGameEvent) -> bool {
     matches!(
         event,
         ReplayGameEvent::Cmd(_)
             | ReplayGameEvent::SelectionDelta(_)
             | ReplayGameEvent::ControlGroupUpdate(_)
+            | ReplayGameEvent::CommandManagerState(_)
+            | ReplayGameEvent::CmdUpdateTargetUnit(_)
     )
 }
 
@@ -219,6 +234,19 @@ mod tests {
     fn trigger_events_do_not_count() {
         let ev = ReplayGameEvent::TriggerKeyPressed(GameSTriggerKeyPressedEvent { m_key: 0, m_flags: 0 });
         assert!(!counts_as_action(&ev));
+    }
+
+    #[test]
+    fn repeated_commands_count_as_actions() {
+        // Since patch 2.0.8 a repeat of the previous command (e.g. pressing Z
+        // five times) is stored as a CommandManagerState event, not a Cmd.
+        // Blizzard's APM counts each repeat; so must we.
+        use s2protocol::game_events::{GameECommandManagerState, GameSCommandManagerStateEvent};
+        let ev = ReplayGameEvent::CommandManagerState(GameSCommandManagerStateEvent {
+            m_state: GameECommandManagerState::EFireOnce,
+            m_sequence: None,
+        });
+        assert!(counts_as_action(&ev));
     }
 
     #[test]

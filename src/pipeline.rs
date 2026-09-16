@@ -26,9 +26,12 @@ pub fn chart_html(path: &Path, back_link: bool) -> Result<String> {
                 name: player.name.clone(),
                 race: player.race.clone(),
                 result: player.result.clone(),
-                average: apm::average_apm(loops.len(), replay.duration_loops),
+                // Measured over the player's own time in the game, as Blizzard
+                // does, so the line ends when they leave and the average is
+                // not diluted by minutes they were not playing.
+                average: apm::average_apm(loops.len(), player.last_event_loop),
                 game_apm: player.game_apm,
-                points: apm::rolling_apm(&loops, replay.duration_loops),
+                points: apm::rolling_apm(&loops, player.last_event_loop),
             }
         })
         .collect();

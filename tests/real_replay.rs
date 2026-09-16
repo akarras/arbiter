@@ -47,10 +47,41 @@ fn loads_the_local_replay_when_present() {
     eprintln!("game duration {game_duration:.0}s, computed {computed:.1}s");
     assert!((game_duration - computed).abs() < 2.0, "time base mismatch: game {game_duration} vs computed {computed}");
     for p in &replay.players {
+        assert!(
+            p.last_event_loop > 0 && p.last_event_loop <= replay.duration_loops,
+            "{}: last event loop {} outside (0, {}]",
+            p.name,
+            p.last_event_loop,
+            replay.duration_loops
+        );
         let count = replay.actions.iter().filter(|a| a.user_id == p.user_id).count();
-        let ours = apm::average_apm(count, replay.duration_loops);
+        let ours = apm::average_apm(count, p.last_event_loop);
         let theirs = p.game_apm.expect("every fixture player has a game APM");
-        eprintln!("{}: ours {ours:.0}, game {theirs:.0}", p.name);
-        assert!(theirs > 0.0);
+        let off = (ours - theirs).abs() / theirs;
+        eprintln!("{}: ours {ours:.0}, game {theirs:.0} ({:.1}% off)", p.name, off * 100.0);
+        assert!(off < 0.08, "{}: ours {ours:.0} vs game {theirs:.0} differ by more than 8%", p.name);
+    }
+    assert!(
+        replay.players.iter().any(|p| p.last_event_loop < replay.duration_loops),
+        "in this 4v4 at least one player stops acting before the replay ends"
+    );
+
+    // Each player's line must end when they stop acting, not at the replay's end.
+    let html = arbiter::pipeline::chart_html(path, false).expect("chart renders");
+    let start = html.find(r#"<script id="data" type="application/json">"#).unwrap()
+        + r#"<script id="data" type="application/json">"#.len();
+    let end = start + html[start..].find("</script>").unwrap();
+    let data: serde_json::Value = serde_json::from_str(&html[start..end]).unwrap();
+    let series = data["series"].as_array().unwrap();
+    assert_eq!(series.len(), replay.players.len());
+    for (s, p) in series.iter().zip(&replay.players) {
+        assert_eq!(s["name"].as_str().unwrap(), p.name);
+        let last_secs = s["points"].as_array().unwrap().last().unwrap()[0].as_f64().unwrap();
+        let active_secs = apm::loops_to_secs(p.last_event_loop);
+        assert!(
+            last_secs <= active_secs,
+            "{}: series runs to {last_secs}s but the player's last event is at {active_secs:.1}s",
+            p.name
+        );
     }
 }

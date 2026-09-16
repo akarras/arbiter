@@ -16,7 +16,7 @@ writes a self-contained interactive HTML page charting each player's APM
 | Language | Rust (existing `arbiter` crate, edition 2024) |
 | Output | One self-contained `.html` file per replay |
 | Windowing | Trailing 60-second window, sampled every 5 seconds |
-| Action set | Match SC2's in-game APM: commands, selections, control groups. Exclude camera. |
+| Action set | Match SC2's in-game APM: commands, selections, control groups, command repeats (`CommandManagerState`), unit retargets (`CmdUpdateTargetUnit`). Exclude camera and `CmdUpdateTargetPoint`. Denominator is each player's own time to their last event. (Amended 2026-09-16 after fitting against Blizzard's metadata APM; see the v2 spec.) |
 | Input | One replay path per run |
 | Parsing | `s2protocol` crate (v3.5.x), default features off |
 | Charting | Hand-written SVG + inline vanilla JS, no third-party JS |

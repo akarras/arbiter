@@ -42,11 +42,19 @@ it to real seconds (`Duration * 16 / 22.4`) so it can be compared with
 which independently confirms the loop summation.
 
 `APM` is per **real** minute: the fixture's top player reads 415 in the
-metadata against 380 by Arbiter's count (ratio 1.09), which a 1.4 clock factor
-would contradict. Blizzard's values run higher than Arbiter's by 1.1x to 2.5x
-because the game counts a broader event set and measures each player over
-their own time in the game (early leavers in a team game get a shorter
-denominator). Ranks match.
+metadata against 380 by Arbiter's original count (ratio 1.09), which a 1.4
+clock factor would contradict.
+
+**Why the original count was low (resolved 2026-09-16).** Fitting every
+combination of game-event types against Blizzard's eight fixture values showed
+the gap was two event kinds the v1 filter dropped: `CommandManagerState`
+(since patch 2.0.8 a repeat of the previous command, e.g. pressing Z again, is
+stored this way rather than as a `Cmd`) and `CmdUpdateTargetUnit` (the previous
+command re-issued on a new unit). Camera moves and `CmdUpdateTargetPoint` do
+not fit. Blizzard also divides by each player's own time to their last event
+rather than the match length. With both changes Arbiter reads 74, 75, 235, 93,
+79, 84, 76, 412 against the game's 74, 78, 233, 96, 83, 83, 78, 415: within
+5.3% for every player. The integration test enforces an 8% bound.
 
 `PlayerID` is 1-based and follows the order of `replay.details` `player_list`
 (the same order `Vec<PlayerLobbyDetails>` iterates). Verified on the fixture:
