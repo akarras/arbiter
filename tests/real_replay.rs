@@ -1,17 +1,52 @@
-use std::path::Path;
+//! Exercises `replay::load` and `pipeline::chart_html` against a real local
+//! replay file rather than a synthetic fixture, since the numbers this
+//! project reports only matter if they match a real, known replay.
+//!
+//! The path defaults to one developer's own local replay and is overridden
+//! with the `ARBITER_FIXTURE` environment variable. The two "file not
+//! present" cases are handled differently on purpose:
+//! - `ARBITER_FIXTURE` unset (the common case, e.g. CI or another
+//!   developer's machine): print a loud notice and skip, so the test suite
+//!   stays green without the fixture.
+//! - `ARBITER_FIXTURE` set to a path that does not exist: panic. Someone
+//!   went out of their way to point this test at a specific file, so a
+//!   typo'd or moved path should fail loudly instead of silently skipping.
+
+use std::env;
+use std::path::{Path, PathBuf};
 
 use arbiter::apm;
 use arbiter::replay;
 
-const FIXTURE: &str = r"the local fixture replay";
+const DEFAULT_FIXTURE: &str = r"the local fixture replay";
 
 #[test]
 fn loads_the_local_replay_when_present() {
-    let path = Path::new(FIXTURE);
+    let fixture_env = env::var("ARBITER_FIXTURE").ok();
+    let path: PathBuf = fixture_env.as_deref().unwrap_or(DEFAULT_FIXTURE).into();
     if !path.is_file() {
-        eprintln!("skipping: fixture not present at {FIXTURE}");
+        if fixture_env.is_some() {
+            panic!(
+                "ARBITER_FIXTURE was set to {} but no file exists there; fix the path or unset ARBITER_FIXTURE",
+                path.display()
+            );
+        }
+        eprintln!(
+            "\n\
+             ================================================================\n\
+             skipping loads_the_local_replay_when_present: fixture not present\n\
+             at the default path:\n\
+             \n\
+             {}\n\
+             \n\
+             This test only runs meaningfully against a real local replay.\n\
+             Set ARBITER_FIXTURE to a .SC2Replay path to run it for real.\n\
+             ================================================================\n",
+            path.display()
+        );
         return;
     }
+    let path: &Path = &path;
     let replay = replay::load(path).expect("replay should parse");
     assert_eq!(replay.map, "Tuonela LE");
     assert!(replay.players.len() >= 2, "expected at least two players: {:?}", replay.players);
