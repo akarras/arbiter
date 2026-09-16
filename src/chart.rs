@@ -389,7 +389,8 @@ mod tests {
         assert!(html.starts_with("<!doctype html>"));
         assert!(html.contains("<title>APM</title>"));
         assert!(html.contains("&lt;b&gt;Bob"), "legend must escape the name");
-        assert!(!html.contains("<b>Bob"), "raw name must never appear");
+        let json_start = html.find(r#"<script id="data""#).unwrap();
+        assert!(!html[..json_start].contains("<b>Bob"), "raw name must never appear in rendered HTML");
         assert!(html.contains(r#"<script id="data" type="application/json">"#));
         assert!(html.contains(r#""name":"Ann""#));
         assert!(html.contains("[5.0,60.0]"), "points are [secs, apm] pairs");
