@@ -36,11 +36,14 @@ pub fn default_roots() -> Vec<PathBuf> {
     roots
 }
 
+/// Recursion limit for `walk`, deep enough for any real replay folder layout.
+const MAX_WALK_DEPTH: u32 = 32;
+
 /// All `.SC2Replay` files under the roots, newest first.
 pub fn find_replays(roots: &[PathBuf]) -> Vec<ReplayEntry> {
     let mut out = Vec::new();
     for root in roots {
-        walk(root, &mut out);
+        walk(root, 0, &mut out);
     }
     out.sort_by_key(|e| std::cmp::Reverse(e.modified));
     out
@@ -56,14 +59,23 @@ pub fn is_within(roots: &[PathBuf], path: &Path) -> Option<PathBuf> {
     inside.then_some(canon)
 }
 
-fn walk(dir: &Path, out: &mut Vec<ReplayEntry>) {
+/// Recursively collects replay files under `dir`. `depth` is the number of
+/// directory levels already descended from the root passed to
+/// `find_replays`; once it reaches `MAX_WALK_DEPTH`, subdirectories are not
+/// descended into. This guards against a symlink or junction loop under a
+/// replay root (e.g. a directory junction pointing back at an ancestor)
+/// recursing without bound and overflowing the stack, which would abort the
+/// whole process — including a long-running `arbiter serve`.
+fn walk(dir: &Path, depth: u32, out: &mut Vec<ReplayEntry>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            walk(&path, out);
+            if depth < MAX_WALK_DEPTH {
+                walk(&path, depth + 1, out);
+            }
             continue;
         }
         let is_replay = path
@@ -138,6 +150,27 @@ mod tests {
     #[test]
     fn missing_root_yields_nothing() {
         assert!(find_replays(&[PathBuf::from("Z:/definitely/not/here")]).is_empty());
+    }
+
+    #[test]
+    fn depth_guard_stops_a_runaway_nesting_but_not_a_normal_one() {
+        let root = std::env::temp_dir().join(format!("arbiter-scan-depth-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let mut deep = root.clone();
+        for i in 0..34 {
+            deep = deep.join(format!("d{i}"));
+        }
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("too-deep.SC2Replay"), b"x").unwrap();
+
+        let shallow_dir = root.join("d0").join("d1").join("d2");
+        fs::write(shallow_dir.join("shallow.SC2Replay"), b"x").unwrap();
+
+        let found: Vec<PathBuf> = find_replays(std::slice::from_ref(&root)).into_iter().map(|e| e.path).collect();
+        assert!(found.iter().any(|p| p.ends_with("shallow.SC2Replay")), "{found:?}");
+        assert!(!found.iter().any(|p| p.ends_with("too-deep.SC2Replay")), "{found:?}");
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
