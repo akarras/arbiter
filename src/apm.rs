@@ -25,7 +25,7 @@ pub const STEP_SECS: f64 = 5.0;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Point {
     pub secs: f64,
-    pub apm: f64,
+    pub value: f64,
 }
 
 pub fn loops_to_secs(game_loop: i64) -> f64 {
@@ -59,7 +59,7 @@ pub fn rolling_apm(action_loops: &[i64], duration_loops: i64) -> Vec<Point> {
             start += 1;
         }
         let minutes = t.min(WINDOW_SECS) / 60.0;
-        points.push(Point { secs: t, apm: (end - start) as f64 / minutes });
+        points.push(Point { secs: t, value: (end - start) as f64 / minutes });
     }
     points
 }
@@ -101,7 +101,7 @@ mod tests {
         let points = rolling_apm(&[], duration_loops);
         let secs: Vec<f64> = points.iter().map(|p| p.secs).collect();
         assert_eq!(secs, vec![5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0]);
-        assert!(points.iter().all(|p| p.apm == 0.0));
+        assert!(points.iter().all(|p| p.value == 0.0));
     }
 
     #[test]
@@ -111,7 +111,7 @@ mod tests {
         let points = rolling_apm(&loops, duration_loops);
         assert!(points.iter().any(|p| p.secs >= 60.0));
         for p in points.iter().filter(|p| p.secs >= 60.0) {
-            assert!((p.apm - 100.0).abs() <= 2.0, "at {}s apm was {}", p.secs, p.apm);
+            assert!((p.value - 100.0).abs() <= 2.0, "at {}s apm was {}", p.secs, p.value);
         }
     }
 
@@ -122,10 +122,10 @@ mod tests {
         let duration_loops = (10.0 * LOOPS_PER_SECOND) as i64;
         let points = rolling_apm(&loops, duration_loops);
         assert_eq!(points[0].secs, 5.0);
-        assert!((points[0].apm - 120.0).abs() < 1e-9);
+        assert!((points[0].value - 120.0).abs() < 1e-9);
         // At t=10 the same 10 actions over 10 s -> 60 APM.
         assert_eq!(points[1].secs, 10.0);
-        assert!((points[1].apm - 60.0).abs() < 1e-9);
+        assert!((points[1].value - 60.0).abs() < 1e-9);
     }
 
     #[test]
@@ -134,7 +134,7 @@ mod tests {
         let loops: Vec<i64> = (1..=60).collect();
         let duration_loops = (120.0 * LOOPS_PER_SECOND) as i64;
         let points = rolling_apm(&loops, duration_loops);
-        let at = |t: f64| points.iter().find(|p| p.secs == t).unwrap().apm;
+        let at = |t: f64| points.iter().find(|p| p.secs == t).unwrap().value;
         assert!((at(60.0) - 60.0).abs() < 1e-9);
         assert_eq!(at(65.0), 0.0);
         assert_eq!(at(120.0), 0.0);

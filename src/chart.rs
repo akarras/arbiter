@@ -136,7 +136,7 @@ fn render_table(html: &mut String, chart: &Chart) {
         for s in &chart.series {
             match s.points.get(row) {
                 Some(p) => {
-                    let _ = write!(html, "<td>{:.0}</td>", p.apm);
+                    let _ = write!(html, "<td>{:.0}</td>", p.value);
                 }
                 None => html.push_str("<td></td>"),
             }
@@ -162,7 +162,7 @@ fn render_json(chart: &Chart) -> String {
             if j > 0 {
                 json.push(',');
             }
-            let _ = write!(json, "[{:.1},{:.1}]", p.secs, p.apm);
+            let _ = write!(json, "[{:.1},{:.1}]", p.secs, p.value);
         }
         json.push_str("]}");
     }
@@ -345,7 +345,7 @@ mod tests {
             points: apms
                 .iter()
                 .enumerate()
-                .map(|(i, &apm)| Point { secs: (i as f64 + 1.0) * 5.0, apm })
+                .map(|(i, &apm)| Point { secs: (i as f64 + 1.0) * 5.0, value: apm })
                 .collect(),
         }
     }
