@@ -98,4 +98,16 @@ fn loads_the_local_replay_when_present() {
             p.name
         );
     }
+
+    let ids: Vec<&str> = data["panels"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, vec!["apm", "income", "army", "supply", "workers", "unspent", "losses"]);
+    for p in data["panels"].as_array().unwrap() {
+        assert_eq!(p["series"].as_array().unwrap().len(), replay.players.len(), "panel {} has one series per player", p["id"]);
+        assert!(p["series"].as_array().unwrap().iter().all(|s| !s["points"].as_array().unwrap().is_empty()), "panel {} has points", p["id"]);
+    }
+    assert_eq!(data["details"].as_array().unwrap().len(), replay.players.len());
+    let d0 = &data["details"][0];
+    assert_eq!(d0["breakdown"].as_array().unwrap().len(), 5);
+    assert!(!d0["epm"].as_array().unwrap().is_empty());
+    eprintln!("supply blocks per player: {:?}", data["details"].as_array().unwrap().iter().map(|d| d["blocks"].as_array().unwrap().len()).collect::<Vec<_>>());
 }

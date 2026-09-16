@@ -7,60 +7,74 @@ use std::sync::OnceLock;
 
 use anyhow::{Result, anyhow};
 
-use crate::{apm, chart, replay};
+use crate::{apm, chart, metrics, replay::{self, ActionKind, StatsSample}};
 
 pub fn chart_html(path: &Path) -> Result<String> {
     let replay = load_guarded(path)?;
-    let players: Vec<chart::PlayerLegend> = replay
-        .players
-        .iter()
-        .map(|player| chart::PlayerLegend {
+    let mut players = Vec::new();
+    let mut apm_series = Vec::new();
+    let mut details = Vec::new();
+    for (i, player) in replay.players.iter().enumerate() {
+        let mut actions: Vec<(i64, ActionKind)> = replay
+            .actions
+            .iter()
+            .filter(|a| a.user_id == player.user_id)
+            .map(|a| (a.game_loop, a.kind))
+            .collect();
+        actions.sort_by_key(|(l, _)| *l);
+        let loops: Vec<i64> = actions.iter().map(|(l, _)| *l).collect();
+        players.push(chart::PlayerLegend {
             name: player.name.clone(),
             race: player.race.clone(),
             result: player.result.clone(),
-            // Measured over the player's own time in the game, as Blizzard
-            // does, so the average is not diluted by minutes they were not
-            // playing.
-            average: apm::average_apm(
-                replay.actions.iter().filter(|a| a.user_id == player.user_id).count(),
-                player.last_event_loop,
-            ),
+            // Over the player's own time in the game, as Blizzard does.
+            average: apm::average_apm(loops.len(), player.last_event_loop),
             game_apm: player.game_apm,
-        })
-        .collect();
-    let apm_series = replay
-        .players
-        .iter()
-        .enumerate()
-        .map(|(i, player)| {
-            let mut loops: Vec<i64> = replay
-                .actions
-                .iter()
-                .filter(|a| a.user_id == player.user_id)
-                .map(|a| a.game_loop)
-                .collect();
-            loops.sort_unstable();
-            chart::PanelSeries {
-                player: i,
-                label: player.name.clone(),
-                points: apm::rolling_apm(&loops, player.last_event_loop),
-            }
-        })
-        .collect();
-    let panels = vec![chart::Panel {
-        id: "apm".to_string(),
-        title: "APM".to_string(),
-        unit: "actions per minute".to_string(),
+        });
+        apm_series.push(chart::PanelSeries { player: i, label: player.name.clone(), points: apm::rolling_apm(&loops, player.last_event_loop) });
+        let samples: Vec<StatsSample> = replay.stats.iter().filter(|s| s.player_id == player.player_id).cloned().collect();
+        details.push(chart::Detail {
+            player: i,
+            breakdown: metrics::apm_breakdown(&actions, player.last_event_loop)
+                .into_iter()
+                .zip(metrics::KIND_LABELS)
+                .map(|(points, label)| chart::PanelSeries { player: i, label: label.to_string(), points })
+                .collect(),
+            epm: apm::rolling_apm(&metrics::effective_loops(&actions), player.last_event_loop),
+            blocks: metrics::supply_blocks(&samples),
+        });
+    }
+    let stat_panel = |id: &str, title: &str, unit: &str, f: fn(&StatsSample) -> f64| chart::Panel {
+        id: id.to_string(),
+        title: title.to_string(),
+        unit: unit.to_string(),
         kind: chart::PanelKind::Lines,
-        series: apm_series,
-    }];
+        series: replay
+            .players
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let samples: Vec<StatsSample> = replay.stats.iter().filter(|s| s.player_id == p.player_id).cloned().collect();
+                chart::PanelSeries { player: i, label: p.name.clone(), points: metrics::series_from_stats(&samples, f) }
+            })
+            .collect(),
+    };
+    let panels = vec![
+        chart::Panel { id: "apm".into(), title: "APM".into(), unit: "actions per minute".into(), kind: chart::PanelKind::Lines, series: apm_series },
+        stat_panel("income", "Income", "minerals + gas per minute", |s| f64::from(s.minerals_rate + s.vespene_rate)),
+        stat_panel("army", "Army value", "minerals + gas in current army", |s| f64::from(s.army_minerals + s.army_vespene)),
+        stat_panel("supply", "Supply used", "supply", |s| s.supply_used),
+        stat_panel("workers", "Workers", "active workers", |s| f64::from(s.workers)),
+        stat_panel("unspent", "Unspent resources", "minerals + gas banked", |s| f64::from(s.minerals_unspent + s.vespene_unspent)),
+        stat_panel("losses", "Army lost", "cumulative minerals + gas", |s| f64::from(s.lost_minerals + s.lost_vespene)),
+    ];
     Ok(chart::render(&chart::Chart {
-        title: format!("APM - {}", replay.map),
+        title: format!("Arbiter - {}", replay.map),
         map: replay.map.clone(),
         duration_secs: apm::loops_to_secs(replay.duration_loops),
         players,
         panels,
-        details: vec![],
+        details,
     }))
 }
 
