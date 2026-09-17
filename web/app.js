@@ -15,6 +15,7 @@ const dirInput = document.getElementById('dir-input');
 const fileInput = document.getElementById('file-input');
 
 let source = null;
+let sourceGeneration = 0;
 let rows = [];
 let filtered = [];
 let selected = null;
@@ -22,7 +23,8 @@ let selectTimer = null;
 let refreshTimer = null;
 let lastSignature = '';
 let lastNames = '';
-let refreshing = false;
+let refreshToken = 0;
+let refreshing = 0;
 
 const fmtDate = ms => ms ? new Date(ms).toLocaleString(undefined, {dateStyle: 'medium', timeStyle: 'short'}) : '';
 const fmtSize = n => Math.round(n / 1024) + ' KB';
@@ -98,6 +100,7 @@ filter.addEventListener('input', render);
 // ---- sources ------------------------------------------------------------
 async function useSource(s) {
   source = s;
+  sourceGeneration++;
   sourceEl.textContent = 'Folder: ' + s.name;
   showWarning('');
   // A same-named file in a different folder must not keep the old chart or
@@ -116,19 +119,31 @@ async function useSource(s) {
 }
 
 async function refresh(force) {
-  if (!source || refreshing) return;
-  refreshing = true;
+  // Snapshot the source and its generation so a switch that happens while
+  // this call is awaiting can't mix results from two different folders.
+  const src = source;
+  const gen = sourceGeneration;
+  if (!src) return;
+  // The reentrancy guard only throttles timer ticks; a forced refresh (from
+  // useSource) must always run, and a stale in-flight tick for the old
+  // source bails on the generation check below instead of being dropped.
+  if (!force && refreshing) return;
+  const mine = ++refreshToken;
+  refreshing = mine;
   try {
     // Cheap check first: on an unchanged folder this avoids reading every
     // file's metadata on every 10s poll tick.
     let names;
-    try { names = (await source.names()).join('|'); }
-    catch (e) { showWarning('Could not read the folder: ' + e.message); return; }
+    try { names = (await src.names()).join('|'); }
+    catch (e) { if (gen === sourceGeneration) showWarning('Could not read the folder: ' + e.message); return; }
+    if (gen !== sourceGeneration) return;
     if (!force && names === lastNames) return;
     lastNames = names;
 
     let entries;
-    try { entries = await source.list(); } catch (e) { showWarning('Could not read the folder: ' + e.message); return; }
+    try { entries = await src.list(); }
+    catch (e) { if (gen === sourceGeneration) showWarning('Could not read the folder: ' + e.message); return; }
+    if (gen !== sourceGeneration) return;
     entries.sort((a, b) => b.modified - a.modified);
     const signature = entries.map(e => e.id + ':' + e.modified + ':' + e.size).join('|');
     if (!force && signature === lastSignature) return;
@@ -136,10 +151,10 @@ async function refresh(force) {
     rows = entries.map(e => ({...e, info: fmtDate(e.modified) + ' · ' + fmtSize(e.size)}));
     if (selected && !rows.some(r => r.id === selected)) { selected = null; frame.srcdoc = ''; showStatus('Select a replay'); }
     render();
-    if (!rows.length) showStatus('No .SC2Replay files found in ' + source.name + '.');
+    if (!rows.length) showStatus('No .SC2Replay files found in ' + src.name + '.');
     else if (!selected) showStatus('Select a replay');
   } finally {
-    refreshing = false;
+    if (refreshing === mine) refreshing = 0;
   }
 }
 
