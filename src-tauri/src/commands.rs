@@ -126,7 +126,9 @@ mod tests {
     #[test]
     fn row_carries_name_seconds_and_size() {
         let e = arbiter::scan::ReplayEntry {
-            path: PathBuf::from(r"C:\r\Tuonela LE (1).SC2Replay"),
+            // Joined, not a backslash literal: on Linux `\` is not a separator
+            // and `file_name()` would return the whole string.
+            path: PathBuf::from("r").join("Tuonela LE (1).SC2Replay"),
             modified: UNIX_EPOCH + Duration::from_secs(1_700_000_000),
             size: 227_146,
         };
