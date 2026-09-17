@@ -10,7 +10,18 @@ use anyhow::{Result, anyhow};
 use crate::{apm, chart, metrics, replay::{self, ActionKind, StatsSample}};
 
 pub fn chart_html(path: &Path) -> Result<String> {
-    let replay = load_guarded(path)?;
+    let label = path.display().to_string();
+    let replay = guarded(&label, || replay::load(path))?;
+    Ok(build(&replay))
+}
+
+/// Same page from bytes already in memory (the web version).
+pub fn chart_html_bytes(name: &str, bytes: &[u8]) -> Result<String> {
+    let replay = guarded(name, || replay::load_bytes(name, bytes))?;
+    Ok(build(&replay))
+}
+
+fn build(replay: &replay::Replay) -> String {
     let mut players = Vec::new();
     let mut apm_series = Vec::new();
     let mut details = Vec::new();
@@ -68,14 +79,14 @@ pub fn chart_html(path: &Path) -> Result<String> {
         stat_panel("unspent", "Unspent resources", "minerals + gas banked", |s| f64::from(s.minerals_unspent + s.vespene_unspent)),
         stat_panel("losses", "Army lost", "cumulative minerals + gas", |s| f64::from(s.lost_minerals + s.lost_vespene)),
     ];
-    Ok(chart::render(&chart::Chart {
+    chart::render(&chart::Chart {
         title: format!("Arbiter - {}", replay.map),
         map: replay.map.clone(),
         duration_secs: apm::loops_to_secs(replay.duration_loops),
         players,
         panels,
         details,
-    }))
+    })
 }
 
 thread_local! {
@@ -124,10 +135,14 @@ fn ensure_hook_installed() {
 /// reads. To keep the exit-1 contract (one `error: ...` line, no panic
 /// backtrace) we run the load behind `catch_unwind` with this thread's
 /// panics silenced, converting any unwind into a plain error.
-fn load_guarded(path: &Path) -> Result<replay::Replay> {
+///
+/// Runs `load` with panics converted to errors. On native targets a panic
+/// inside `s2protocol` unwinds and is caught; on wasm32 panics abort the
+/// worker instead, and the page restarts it.
+fn guarded(label: &str, load: impl FnOnce() -> Result<replay::Replay>) -> Result<replay::Replay> {
     ensure_hook_installed();
     SILENCE.with(|s| s.set(true));
-    let result = panic::catch_unwind(AssertUnwindSafe(|| replay::load(path)));
+    let result = panic::catch_unwind(AssertUnwindSafe(load));
     SILENCE.with(|s| s.set(false));
     match result {
         Ok(replay_result) => replay_result,
@@ -137,14 +152,8 @@ fn load_guarded(path: &Path) -> Result<replay::Replay> {
                 .map(|s| s.to_string())
                 .or_else(|| payload.downcast_ref::<String>().cloned());
             match detail {
-                Some(detail) => Err(anyhow!(
-                    "could not parse {}: not a StarCraft II replay or the file is corrupt ({detail})",
-                    path.display()
-                )),
-                None => Err(anyhow!(
-                    "could not parse {}: not a StarCraft II replay or the file is corrupt",
-                    path.display()
-                )),
+                Some(detail) => Err(anyhow!("could not parse {label}: not a StarCraft II replay or the file is corrupt ({detail})")),
+                None => Err(anyhow!("could not parse {label}: not a StarCraft II replay or the file is corrupt")),
             }
         }
     }
@@ -173,5 +182,11 @@ mod tests {
             message.contains("not a StarCraft II replay"),
             "unexpected error message: {message}"
         );
+    }
+
+    #[test]
+    fn garbage_bytes_give_a_clear_error_instead_of_panicking() {
+        let err = chart_html_bytes("junk.SC2Replay", b"definitely not a replay").unwrap_err();
+        assert!(err.to_string().contains("not a StarCraft II replay"), "{err}");
     }
 }

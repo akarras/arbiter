@@ -94,14 +94,21 @@ pub fn load(path: &Path) -> Result<Replay> {
     if !path.is_file() {
         bail!("replay file not found: {}", path.display());
     }
+    let bytes = std::fs::read(path).with_context(|| format!("could not read {}", path.display()))?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
+    load_bytes(&name, &bytes)
+}
 
-    let init = InitData::try_from((path.to_path_buf(), 0u64)).with_context(|| {
-        format!(
-            "could not parse replay header of {}: not a StarCraft II replay or the file is corrupt",
-            path.display()
-        )
+/// Parses a replay already in memory. `name` only labels error messages and
+/// the crate's per-file metadata; it does not need to exist on disk.
+pub fn load_bytes(name: &str, bytes: &[u8]) -> Result<Replay> {
+    let (_, mpq) = s2protocol::parser::parse(bytes).map_err(|e| {
+        anyhow::anyhow!("could not read MPQ archive of {name}: not a StarCraft II replay or the file is corrupt ({e:?})")
     })?;
-    let lobby: Vec<PlayerLobbyDetails> = (&init).try_into().context(
+    let init = InitData::new(name, 0, &mpq, bytes).with_context(|| {
+        format!("could not parse replay header of {name}: not a StarCraft II replay or the file is corrupt")
+    })?;
+    let lobby: Vec<PlayerLobbyDetails> = join_lobby_details(name, &mpq, bytes, &init).context(
         "could not join lobby slots to player details: not a StarCraft II replay or the file is corrupt",
     )?;
     let map = lobby.first().map(|p| p.title.clone()).unwrap_or_default();
@@ -110,11 +117,8 @@ pub fn load(path: &Path) -> Result<Replay> {
     {
         bail!("replay was recorded at game speed {speed} (only Faster is supported)");
     }
-    let path_str = path.to_str().context("replay path is not valid UTF-8")?;
-    let (mpq, contents) = s2protocol::read_mpq(path_str)
-        .context("could not read MPQ archive: not a StarCraft II replay or the file is corrupt")?;
-
-    let metadata = read_game_metadata(&mpq, &contents);
+    let contents = bytes;
+    let metadata = read_game_metadata(&mpq, contents);
     let game_duration_secs = metadata.as_ref().and_then(|m| m.duration_game_secs).map(game_secs_to_real);
 
     let mut players: Vec<Player> = lobby
@@ -135,14 +139,14 @@ pub fn load(path: &Path) -> Result<Replay> {
         })
         .collect();
     if players.is_empty() {
-        bail!("no players found in {}", path.display());
+        bail!("no players found in {}", name);
     }
 
     // The tracker stream's `PlayerSetup` events are the authoritative
     // user_id -> player_id mapping; resolve ids from them (fail-soft to an
     // empty `Vec`, and so positional ids, when the replay has no tracker
     // stream or it fails to decode) before using `player_id` for anything.
-    let tracker_events = s2protocol::read_tracker_events(path_str, &mpq, &contents).unwrap_or_default();
+    let tracker_events = s2protocol::read_tracker_events(name, &mpq, contents).unwrap_or_default();
     let setups: Vec<(u8, Option<i64>)> = tracker_events
         .iter()
         .filter_map(|ev| match &ev.event {
@@ -155,7 +159,7 @@ pub fn load(path: &Path) -> Result<Replay> {
         player.game_apm = apm_for_player_id(metadata.as_ref(), player.player_id);
     }
 
-    let events = s2protocol::read_game_events(path_str, &mpq, &contents).context(
+    let events = s2protocol::read_game_events(name, &mpq, contents).context(
         "could not decode game events (unsupported protocol version?): not a StarCraft II replay or the file is corrupt",
     )?;
 
@@ -178,6 +182,49 @@ pub fn load(path: &Path) -> Result<Replay> {
     }
     let stats = stats_from_tracker_events(&tracker_events, &players);
     Ok(Replay { map, duration_loops: game_loop, players, actions, game_duration_secs, stats })
+}
+
+/// Joins the replay's `Details` sector to `init`'s lobby slots, replicating
+/// `s2protocol`'s own `TryFrom<&InitData> for Vec<PlayerLobbyDetails>`. That
+/// impl re-reads the file from disk through `InitData::ext_fs_file_name`
+/// instead of using the bytes already in hand, which breaks as soon as
+/// `name` is not itself a readable path (e.g. `load_bytes` called with an
+/// in-memory buffer and a plain label, as the wasm build always does) with
+/// an unhelpful "file not found" error. `s2protocol::read_details` decodes
+/// `Details` from `bytes` directly, so this join never touches a filesystem.
+fn join_lobby_details(name: &str, mpq: &s2protocol::MPQ, bytes: &[u8], init: &InitData) -> Result<Vec<PlayerLobbyDetails>> {
+    let details = s2protocol::read_details(name, mpq, bytes).map_err(|e| anyhow::anyhow!("could not read replay details: {e:?}"))?;
+    let lobby = details
+        .player_list
+        .iter()
+        .filter_map(|player| {
+            let slot_idx = init.sync_lobby_state.lobby_state.slots.iter().position(|slot| {
+                matches!((slot.working_set_slot_id, player.working_set_slot_id), (Some(a), Some(b)) if a == b)
+            })?;
+            Some(PlayerLobbyDetails {
+                title: details.title.clone(),
+                game_description: init.sync_lobby_state.game_description.clone(),
+                lobby_slot: init.sync_lobby_state.lobby_state.slots[slot_idx].clone(),
+                player_details: player.clone(),
+                time_utc: details.time_utc,
+                time_local_offset: details.time_local_offset,
+                user_init_data_name: init.sync_lobby_state.user_initial_data.get(slot_idx).map_or_else(String::new, |u| u.name.clone()),
+                user_init_data_clan_tag: init
+                    .sync_lobby_state
+                    .user_initial_data
+                    .get(slot_idx)
+                    .map_or_else(String::new, |u| u.clan_tag.clone().unwrap_or_default()),
+                tracker_setup_player_id: None,
+                tracker_setup_slot_id: None,
+                cache_handles: details.cache_handles.clone(),
+                ext_fs_id: details.ext_fs_id,
+                ext_fs_sha256: init.ext_fs_sha256.clone(),
+                ext_fs_file_name: init.ext_fs_file_name.clone(),
+                ext_datetime: details.ext_datetime,
+            })
+        })
+        .collect();
+    Ok(lobby)
 }
 
 /// Resolves each player's tracker `player_id` from the authoritative

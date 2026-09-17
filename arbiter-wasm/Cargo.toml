@@ -1,0 +1,16 @@
+[package]
+name = "arbiter-wasm"
+version = "0.1.0"
+edition = "2024"
+description = "Arbiter's replay parser and chart renderer compiled to WebAssembly for the website"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+arbiter = { path = ".." }
+wasm-bindgen = "0.2"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-O"]

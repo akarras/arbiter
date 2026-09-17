@@ -48,6 +48,13 @@ fn loads_the_local_replay_when_present() {
     }
     let path: &Path = &path;
     let replay = replay::load(path).expect("replay should parse");
+    let bytes = std::fs::read(path).unwrap();
+    let from_bytes = replay::load_bytes("Tuonela LE (115).SC2Replay", &bytes).expect("bytes parse");
+    assert_eq!(from_bytes.players, replay.players);
+    assert_eq!(from_bytes.actions.len(), replay.actions.len());
+    assert_eq!(from_bytes.stats.len(), replay.stats.len());
+    let html = arbiter::pipeline::chart_html_bytes("Tuonela LE (115).SC2Replay", &bytes).expect("chart from bytes");
+    assert!(html.contains("Tuonela LE"));
     assert_eq!(replay.map, "Tuonela LE");
     assert!(replay.players.len() >= 2, "expected at least two players: {:?}", replay.players);
     let mut ids: Vec<i64> = replay.players.iter().map(|p| p.user_id).collect();

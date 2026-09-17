@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace]
-members = ["src-tauri"]
+members = ["src-tauri", "arbiter-wasm"]
 
 # s2protocol embeds balance data through include_assets, which pulls in zstd
 # C code that needs clang to build for WebAssembly. Arbiter never reads that
