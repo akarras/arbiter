@@ -14,15 +14,28 @@ async function walk(dir, prefix, depth, out) {
   }
 }
 
+const BATCH = 64;
+
 export class HandleSource {
   constructor(handle) { this.kind = 'handle'; this.handle = handle; this.name = handle.name; this.canRemember = true; }
+  // Cheap existence/rename check: walks the directory tree but never opens a
+  // file, so it's safe to call on every poll tick.
+  async names() {
+    const raw = [];
+    await walk(this.handle, '', 0, raw);
+    return raw.map(r => r.id).sort();
+  }
   async list() {
     const raw = [];
     await walk(this.handle, '', 0, raw);
     const entries = [];
-    for (const r of raw) {
-      const f = await r.handle.getFile();
-      entries.push({id: r.id, name: r.name, size: f.size, modified: f.lastModified, bytes: () => r.handle.getFile().then(x => x.arrayBuffer())});
+    for (let i = 0; i < raw.length; i += BATCH) {
+      const slice = raw.slice(i, i + BATCH);
+      const files = await Promise.all(slice.map(r => r.handle.getFile()));
+      for (let j = 0; j < slice.length; j++) {
+        const r = slice[j], f = files[j];
+        entries.push({id: r.id, name: r.name, size: f.size, modified: f.lastModified, bytes: () => r.handle.getFile().then(x => x.arrayBuffer())});
+      }
     }
     return entries;
   }
@@ -30,6 +43,9 @@ export class HandleSource {
 
 export class FileListSource {
   constructor(files, name) { this.kind = 'files'; this.files = [...files]; this.name = name; this.canRemember = false; }
+  async names() {
+    return this.files.filter(f => isReplay(f.name)).map(f => f.webkitRelativePath || f.name).sort();
+  }
   async list() {
     return this.files.filter(f => isReplay(f.name)).map(f => ({
       id: f.webkitRelativePath || f.name, name: f.name, size: f.size, modified: f.lastModified, bytes: () => f.arrayBuffer(),
@@ -40,6 +56,10 @@ export class FileListSource {
 // Automation only (?mock=1): entries come from mock/manifest.json on the same origin.
 export class MockSource {
   constructor() { this.kind = 'mock'; this.name = 'mock folder'; this.canRemember = false; }
+  async names() {
+    const manifest = await (await fetch('mock/manifest.json', {cache: 'no-store'})).json();
+    return manifest.map(e => e.file).sort();
+  }
   async list() {
     const manifest = await (await fetch('mock/manifest.json', {cache: 'no-store'})).json();
     return manifest.map(e => ({id: e.file, name: e.name, size: e.size, modified: e.modified, bytes: async () => (await fetch('mock/' + e.file)).arrayBuffer()}));

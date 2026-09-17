@@ -21,6 +21,8 @@ let selected = null;
 let selectTimer = null;
 let refreshTimer = null;
 let lastSignature = '';
+let lastNames = '';
+let refreshing = false;
 
 const fmtDate = ms => ms ? new Date(ms).toLocaleString(undefined, {dateStyle: 'medium', timeStyle: 'short'}) : '';
 const fmtSize = n => Math.round(n / 1024) + ' KB';
@@ -98,6 +100,14 @@ async function useSource(s) {
   source = s;
   sourceEl.textContent = 'Folder: ' + s.name;
   showWarning('');
+  // A same-named file in a different folder must not keep the old chart or
+  // selection, and stale poll signatures must not suppress the first load.
+  selected = null;
+  frame.srcdoc = '';
+  lastSignature = '';
+  lastNames = '';
+  filter.value = '';
+  showStatus('Select a replay');
   if (s.canRemember) await remember(s.handle);
   reopenBtn.hidden = true;
   await refresh(true);
@@ -106,18 +116,31 @@ async function useSource(s) {
 }
 
 async function refresh(force) {
-  if (!source) return;
-  let entries;
-  try { entries = await source.list(); } catch (e) { showWarning('Could not read the folder: ' + e.message); return; }
-  entries.sort((a, b) => b.modified - a.modified);
-  const signature = entries.map(e => e.id + ':' + e.modified + ':' + e.size).join('|');
-  if (!force && signature === lastSignature) return;
-  lastSignature = signature;
-  rows = entries.map(e => ({...e, info: fmtDate(e.modified) + ' · ' + fmtSize(e.size)}));
-  if (selected && !rows.some(r => r.id === selected)) { selected = null; frame.srcdoc = ''; showStatus('Select a replay'); }
-  render();
-  if (!rows.length) showStatus('No .SC2Replay files found in ' + source.name + '.');
-  else if (!selected) showStatus('Select a replay');
+  if (!source || refreshing) return;
+  refreshing = true;
+  try {
+    // Cheap check first: on an unchanged folder this avoids reading every
+    // file's metadata on every 10s poll tick.
+    let names;
+    try { names = (await source.names()).join('|'); }
+    catch (e) { showWarning('Could not read the folder: ' + e.message); return; }
+    if (!force && names === lastNames) return;
+    lastNames = names;
+
+    let entries;
+    try { entries = await source.list(); } catch (e) { showWarning('Could not read the folder: ' + e.message); return; }
+    entries.sort((a, b) => b.modified - a.modified);
+    const signature = entries.map(e => e.id + ':' + e.modified + ':' + e.size).join('|');
+    if (!force && signature === lastSignature) return;
+    lastSignature = signature;
+    rows = entries.map(e => ({...e, info: fmtDate(e.modified) + ' · ' + fmtSize(e.size)}));
+    if (selected && !rows.some(r => r.id === selected)) { selected = null; frame.srcdoc = ''; showStatus('Select a replay'); }
+    render();
+    if (!rows.length) showStatus('No .SC2Replay files found in ' + source.name + '.');
+    else if (!selected) showStatus('Select a replay');
+  } finally {
+    refreshing = false;
+  }
 }
 
 async function loadEntry(entry) {
@@ -171,6 +194,7 @@ dirInput.addEventListener('change', async () => {
   if (!dirInput.files.length) return;
   const name = (dirInput.files[0].webkitRelativePath || '').split('/')[0] || 'chosen folder';
   await useSource(new FileListSource(dirInput.files, name));
+  dirInput.value = '';
 });
 reopenBtn.addEventListener('click', async () => {
   const handle = await remembered();
