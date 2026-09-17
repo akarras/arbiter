@@ -190,10 +190,15 @@ pub fn load_bytes(name: &str, bytes: &[u8]) -> Result<Replay> {
 /// instead of using the bytes already in hand, which breaks as soon as
 /// `name` is not itself a readable path (e.g. `load_bytes` called with an
 /// in-memory buffer and a plain label, as the wasm build always does) with
-/// an unhelpful "file not found" error. `s2protocol::read_details` decodes
-/// `Details` from `bytes` directly, so this join never touches a filesystem.
+/// an unhelpful "file not found" error. `s2protocol::details::Details::new`
+/// decodes `Details` from `bytes` directly (then calls `set_metadata`, the
+/// same as the crate's own join, so `ext_fs_id`/`ext_datetime` line up), so
+/// this join never touches a filesystem. There is no on-disk fs id available
+/// here, so `ext_fs_id` is passed as `0`, matching `ext_fs_id` below which is
+/// likewise not sourced from a real filesystem entry.
 fn join_lobby_details(name: &str, mpq: &s2protocol::MPQ, bytes: &[u8], init: &InitData) -> Result<Vec<PlayerLobbyDetails>> {
-    let details = s2protocol::read_details(name, mpq, bytes).map_err(|e| anyhow::anyhow!("could not read replay details: {e:?}"))?;
+    let details =
+        s2protocol::details::Details::new(name, 0, mpq, bytes).map_err(|e| anyhow::anyhow!("could not read replay details: {e:?}"))?;
     let lobby = details
         .player_list
         .iter()

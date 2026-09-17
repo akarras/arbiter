@@ -137,8 +137,9 @@ fn ensure_hook_installed() {
 /// panics silenced, converting any unwind into a plain error.
 ///
 /// Runs `load` with panics converted to errors. On native targets a panic
-/// inside `s2protocol` unwinds and is caught; on wasm32 panics abort the
-/// worker instead, and the page restarts it.
+/// inside `s2protocol` unwinds and is caught; on wasm32 a panic traps the
+/// instance instead (there is no unwinding), so the worker reports it to the
+/// page as a crash and the page restarts the worker.
 fn guarded(label: &str, load: impl FnOnce() -> Result<replay::Replay>) -> Result<replay::Replay> {
     ensure_hook_installed();
     SILENCE.with(|s| s.set(true));
