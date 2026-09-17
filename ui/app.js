@@ -37,28 +37,68 @@
     warning.hidden = false;
   }
 
+  // The list is virtualised: only the rows inside the scroll viewport (plus a
+  // small buffer) exist in the DOM, with spacer elements holding the rest of
+  // the scroll height. Thousands of live rows made the WebView's layer large
+  // enough to stall the compositor while the window moved.
+  const ROW = 48; // px, must match #list li height in app.css
+  const BUFFER = 8;
+  let filtered = [];
+  let paintQueued = false;
+
+  function makeRow(r) {
+    const li = document.createElement('li');
+    li.dataset.path = r.path;
+    if (r.path === selected) li.classList.add('selected');
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = r.name;
+    const info = document.createElement('span');
+    info.className = 'info';
+    info.textContent = r.info;
+    li.append(name, info);
+    li.addEventListener('click', () => select(r.path));
+    return li;
+  }
+
+  function spacer(px) {
+    const li = document.createElement('li');
+    li.className = 'spacer';
+    li.style.height = px + 'px';
+    return li;
+  }
+
+  function paint() {
+    paintQueued = false;
+    const first = Math.max(0, Math.floor(list.scrollTop / ROW) - BUFFER);
+    const last = Math.min(filtered.length, Math.ceil((list.scrollTop + list.clientHeight) / ROW) + BUFFER);
+    const frag = document.createDocumentFragment();
+    frag.appendChild(spacer(first * ROW));
+    for (let i = first; i < last; i++) frag.appendChild(makeRow(filtered[i]));
+    frag.appendChild(spacer(Math.max(0, filtered.length - last) * ROW));
+    list.replaceChildren(frag);
+  }
+
+  function schedulePaint() {
+    if (paintQueued) return;
+    paintQueued = true;
+    requestAnimationFrame(paint);
+  }
+
+  let lastQuery = '';
+
   function render() {
     const q = filter.value.trim().toLowerCase();
-    list.textContent = '';
-    let shown = 0;
-    for (const r of rows) {
-      if (q && !r.name.toLowerCase().includes(q)) continue;
-      shown++;
-      const li = document.createElement('li');
-      li.dataset.path = r.path;
-      if (r.path === selected) li.classList.add('selected');
-      const name = document.createElement('span');
-      name.className = 'name';
-      name.textContent = r.name;
-      const info = document.createElement('span');
-      info.className = 'info';
-      info.textContent = r.info;
-      li.append(name, info);
-      li.addEventListener('click', () => select(r.path));
-      list.appendChild(li);
-    }
-    count.textContent = shown === rows.length ? rows.length + ' replays' : shown + ' of ' + rows.length + ' replays';
+    filtered = q ? rows.filter(r => r.name.toLowerCase().includes(q)) : rows;
+    // A changed filter starts from the top; a reload keeps the scroll position.
+    if (q !== lastQuery) list.scrollTop = 0;
+    lastQuery = q;
+    count.textContent = filtered.length === rows.length ? rows.length + ' replays' : filtered.length + ' of ' + rows.length + ' replays';
+    paint();
   }
+
+  list.addEventListener('scroll', schedulePaint);
+  window.addEventListener('resize', schedulePaint);
 
   async function reload() {
     try {
@@ -111,17 +151,19 @@
   document.addEventListener('keydown', e => {
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
     if (document.activeElement === filter) return;
-    const visible = [...list.children];
-    if (!visible.length) return;
-    let i = visible.findIndex(li => li.dataset.path === selected);
-    i = e.key === 'ArrowDown' ? Math.min(i + 1, visible.length - 1) : Math.max(i - 1, 0);
+    if (!filtered.length) return;
+    let i = filtered.findIndex(r => r.path === selected);
+    i = e.key === 'ArrowDown' ? Math.min(i + 1, filtered.length - 1) : Math.max(i - 1, 0);
     e.preventDefault();
-    visible[i].scrollIntoView({block: 'nearest'});
+    // Keep the row inside the viewport, then repaint so it exists in the DOM.
+    if (i * ROW < list.scrollTop) list.scrollTop = i * ROW;
+    else if ((i + 1) * ROW > list.scrollTop + list.clientHeight) list.scrollTop = (i + 1) * ROW - list.clientHeight;
+    paint();
 
     // Move the highlight instantly, but only fetch and render the chart
     // once the user has paused on a row for a bit, so holding the arrow
     // key down does not fire a `chart_html` parse per row.
-    highlight(visible[i].dataset.path);
+    highlight(filtered[i].path);
     if (selectTimer) clearTimeout(selectTimer);
     const path = selected;
     selectTimer = setTimeout(() => { selectTimer = null; loadSelected(path); }, 150);
