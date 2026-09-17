@@ -6,6 +6,12 @@ edition = "2024"
 [workspace]
 members = ["src-tauri"]
 
+# s2protocol embeds balance data through include_assets, which pulls in zstd
+# C code that needs clang to build for WebAssembly. Arbiter never reads that
+# data, so an empty stand-in replaces the crate for every target.
+[patch.crates-io]
+include_assets = { path = "vendor/include_assets" }
+
 [dependencies]
 anyhow = "1"
 s2protocol = { version = "3.5", default-features = false, features = ["tracing_off"] }

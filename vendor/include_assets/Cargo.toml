@@ -1,0 +1,9 @@
+[package]
+name = "include_assets"
+version = "1.0.0"
+edition = "2021"
+description = "Empty stand-in for include_assets so s2protocol builds without zstd C code (Arbiter never reads its embedded balance data)"
+publish = false
+
+[lib]
+path = "src/lib.rs"
