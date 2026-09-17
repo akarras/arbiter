@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arbiter</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<aside id="sidebar">
+  <header>
+    <h1>Arbiter</h1>
+    <div class="actions">
+      <button id="choose" type="button">Choose folder…</button>
+      <button id="reopen" type="button" hidden></button>
+      <button id="open" type="button">Open file…</button>
+    </div>
+    <input id="dir-input" type="file" webkitdirectory multiple hidden>
+    <input id="file-input" type="file" accept=".SC2Replay" hidden>
+    <input id="filter" type="search" placeholder="Filter by name" autocomplete="off">
+    <p id="count" class="meta"></p>
+  </header>
+  <ul id="list"></ul>
+  <footer>
+    <p id="source" class="meta">No folder chosen.</p>
+    <p id="warning" class="meta warning" hidden></p>
+    <p class="meta">Replays are read by your browser and never uploaded. <span id="version"></span></p>
+  </footer>
+</aside>
+<main id="pane">
+  <iframe id="chart" sandbox="allow-scripts" title="Replay charts"></iframe>
+  <div id="status">Choose your StarCraft II replay folder to begin.</div>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>

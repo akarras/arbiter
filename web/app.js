@@ -1,0 +1,196 @@
+import { supportsPicker, HandleSource, FileListSource, MockSource, remember, remembered, reopen } from './source.js';
+
+const status = document.getElementById('status');
+const list = document.getElementById('list');
+const filter = document.getElementById('filter');
+const count = document.getElementById('count');
+const sourceEl = document.getElementById('source');
+const warning = document.getElementById('warning');
+const versionEl = document.getElementById('version');
+const frame = document.getElementById('chart');
+const chooseBtn = document.getElementById('choose');
+const reopenBtn = document.getElementById('reopen');
+const openBtn = document.getElementById('open');
+const dirInput = document.getElementById('dir-input');
+const fileInput = document.getElementById('file-input');
+
+let source = null;
+let rows = [];
+let filtered = [];
+let selected = null;
+let selectTimer = null;
+let refreshTimer = null;
+let lastSignature = '';
+
+const fmtDate = ms => ms ? new Date(ms).toLocaleString(undefined, {dateStyle: 'medium', timeStyle: 'short'}) : '';
+const fmtSize = n => Math.round(n / 1024) + ' KB';
+
+function showStatus(text, isError) { status.textContent = text; status.classList.toggle('error', !!isError); status.hidden = false; }
+function showWarning(text) { warning.textContent = text; warning.hidden = !text; }
+
+// ---- parser worker ------------------------------------------------------
+let worker = null, nextId = 1, inflight = new Map();
+function startWorker() {
+  worker = new Worker(new URL('./worker.js', import.meta.url), {type: 'module'});
+  worker.onmessage = e => {
+    if (e.data.type === 'ready') { versionEl.textContent = 'v' + e.data.version; return; }
+    const p = inflight.get(e.data.id);
+    if (!p) return;
+    inflight.delete(e.data.id);
+    e.data.error ? p.reject(new Error(e.data.error)) : p.resolve(e.data.html);
+  };
+  worker.onerror = () => {
+    for (const p of inflight.values()) p.reject(new Error('the parser crashed on this file'));
+    inflight.clear();
+    worker.terminate();
+    startWorker();
+  };
+}
+function parse(name, bytes) {
+  return new Promise((resolve, reject) => {
+    const id = nextId++;
+    inflight.set(id, {resolve, reject});
+    worker.postMessage({id, name, bytes}, [bytes]);
+  });
+}
+startWorker();
+
+// ---- virtual list (same as the desktop app) ----------------------------
+const ROW = 48, BUFFER = 8;
+let paintQueued = false, lastQuery = '';
+function makeRow(r) {
+  const li = document.createElement('li');
+  li.dataset.id = r.id;
+  if (r.id === selected) li.classList.add('selected');
+  const name = document.createElement('span'); name.className = 'name'; name.textContent = r.name;
+  const info = document.createElement('span'); info.className = 'info'; info.textContent = r.info;
+  li.append(name, info);
+  li.addEventListener('click', () => select(r.id));
+  return li;
+}
+function spacer(px) { const li = document.createElement('li'); li.className = 'spacer'; li.style.height = px + 'px'; return li; }
+function paint() {
+  paintQueued = false;
+  const first = Math.max(0, Math.floor(list.scrollTop / ROW) - BUFFER);
+  const last = Math.min(filtered.length, Math.ceil((list.scrollTop + list.clientHeight) / ROW) + BUFFER);
+  const frag = document.createDocumentFragment();
+  frag.appendChild(spacer(first * ROW));
+  for (let i = first; i < last; i++) frag.appendChild(makeRow(filtered[i]));
+  frag.appendChild(spacer(Math.max(0, filtered.length - last) * ROW));
+  list.replaceChildren(frag);
+}
+function schedulePaint() { if (paintQueued) return; paintQueued = true; requestAnimationFrame(paint); }
+function render() {
+  const q = filter.value.trim().toLowerCase();
+  filtered = q ? rows.filter(r => r.name.toLowerCase().includes(q)) : rows;
+  if (q !== lastQuery) list.scrollTop = 0;
+  lastQuery = q;
+  count.textContent = filtered.length === rows.length ? rows.length + ' replays' : filtered.length + ' of ' + rows.length + ' replays';
+  paint();
+}
+function highlight(id) { selected = id; for (const li of list.children) li.classList.toggle('selected', li.dataset.id === id); }
+list.addEventListener('scroll', schedulePaint);
+window.addEventListener('resize', schedulePaint);
+filter.addEventListener('input', render);
+
+// ---- sources ------------------------------------------------------------
+async function useSource(s) {
+  source = s;
+  sourceEl.textContent = 'Folder: ' + s.name;
+  showWarning('');
+  if (s.canRemember) await remember(s.handle);
+  reopenBtn.hidden = true;
+  await refresh(true);
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => { if (!document.hidden) refresh(false); }, 10000);
+}
+
+async function refresh(force) {
+  if (!source) return;
+  let entries;
+  try { entries = await source.list(); } catch (e) { showWarning('Could not read the folder: ' + e.message); return; }
+  entries.sort((a, b) => b.modified - a.modified);
+  const signature = entries.map(e => e.id + ':' + e.modified + ':' + e.size).join('|');
+  if (!force && signature === lastSignature) return;
+  lastSignature = signature;
+  rows = entries.map(e => ({...e, info: fmtDate(e.modified) + ' · ' + fmtSize(e.size)}));
+  if (selected && !rows.some(r => r.id === selected)) { selected = null; frame.srcdoc = ''; showStatus('Select a replay'); }
+  render();
+  if (!rows.length) showStatus('No .SC2Replay files found in ' + source.name + '.');
+  else if (!selected) showStatus('Select a replay');
+}
+
+async function loadEntry(entry) {
+  showStatus('Parsing ' + entry.name + '…');
+  frame.srcdoc = '';
+  try {
+    const bytes = await entry.bytes();
+    frame.srcdoc = await parse(entry.name, bytes);
+    status.hidden = true;
+  } catch (e) {
+    showStatus('Could not chart this replay.\n' + e.message, true);
+  }
+}
+
+function select(id) {
+  highlight(id);
+  if (selectTimer) { clearTimeout(selectTimer); selectTimer = null; }
+  const entry = rows.find(r => r.id === id);
+  if (entry) loadEntry(entry);
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  if (document.activeElement === filter) return;
+  if (!filtered.length) return;
+  let i = filtered.findIndex(r => r.id === selected);
+  i = e.key === 'ArrowDown' ? Math.min(i + 1, filtered.length - 1) : Math.max(i - 1, 0);
+  e.preventDefault();
+  if (i * ROW < list.scrollTop) list.scrollTop = i * ROW;
+  else if ((i + 1) * ROW > list.scrollTop + list.clientHeight) list.scrollTop = (i + 1) * ROW - list.clientHeight;
+  paint();
+  highlight(filtered[i].id);
+  if (selectTimer) clearTimeout(selectTimer);
+  const entry = filtered[i];
+  selectTimer = setTimeout(() => { selectTimer = null; loadEntry(entry); }, 150);
+});
+
+chooseBtn.addEventListener('click', async () => {
+  if (supportsPicker) {
+    try {
+      const handle = await window.showDirectoryPicker({mode: 'read'});
+      await useSource(new HandleSource(handle));
+    } catch (e) {
+      if (e.name !== 'AbortError') showWarning('Could not open the folder: ' + e.message);
+    }
+  } else {
+    dirInput.click();
+  }
+});
+dirInput.addEventListener('change', async () => {
+  if (!dirInput.files.length) return;
+  const name = (dirInput.files[0].webkitRelativePath || '').split('/')[0] || 'chosen folder';
+  await useSource(new FileListSource(dirInput.files, name));
+});
+reopenBtn.addEventListener('click', async () => {
+  const handle = await remembered();
+  if (!handle) { reopenBtn.hidden = true; return; }
+  const s = await reopen(handle);
+  if (s) await useSource(s); else showWarning('Permission to read ' + handle.name + ' was not granted. Choose the folder again.');
+});
+openBtn.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', async () => {
+  const f = fileInput.files[0];
+  if (!f) return;
+  selected = null; highlight(null);
+  await loadEntry({name: f.name, bytes: () => f.arrayBuffer()});
+  fileInput.value = '';
+});
+
+// ---- startup ------------------------------------------------------------
+(async () => {
+  if (new URLSearchParams(location.search).get('mock') === '1') { await useSource(new MockSource()); return; }
+  if (!supportsPicker) sourceEl.textContent = 'This browser cannot remember a folder; you will pick it each visit.';
+  const handle = supportsPicker ? await remembered() : null;
+  if (handle) { reopenBtn.textContent = 'Reopen ' + handle.name; reopenBtn.hidden = false; }
+})();
