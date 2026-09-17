@@ -398,7 +398,7 @@ mod tests {
 
     #[test]
     fn strips_clan_tag_markup_from_names() {
-        assert_eq!(strip_clan_markup("&lt;CLAN&gt;<sp/>Name"), "the user's player");
+        assert_eq!(strip_clan_markup("&lt;CLAN&gt;<sp/>Example"), "Example");
         assert_eq!(strip_clan_markup("Ferdwas"), "Ferdwas");
     }
 

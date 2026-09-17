@@ -2,11 +2,11 @@
 //! replay file rather than a synthetic fixture, since the numbers this
 //! project reports only matter if they match a real, known replay.
 //!
-//! The path defaults to one developer's own local replay and is overridden
-//! with the `ARBITER_FIXTURE` environment variable. The two "file not
-//! present" cases are handled differently on purpose:
+//! The path comes only from the `ARBITER_FIXTURE` environment variable
+//! (nobody else has this replay, so there is no sensible default). The two
+//! "no usable fixture" cases are handled differently on purpose:
 //! - `ARBITER_FIXTURE` unset (the common case, e.g. CI or another
-//!   developer's machine): print a loud notice and skip, so the test suite
+//!   developer's machine): print a notice and skip, so the test suite
 //!   stays green without the fixture.
 //! - `ARBITER_FIXTURE` set to a path that does not exist: panic. Someone
 //!   went out of their way to point this test at a specific file, so a
@@ -18,33 +18,21 @@ use std::path::{Path, PathBuf};
 use arbiter::apm;
 use arbiter::replay;
 
-const DEFAULT_FIXTURE: &str = r"the local fixture replay";
-
 #[test]
 fn loads_the_local_replay_when_present() {
-    let fixture_env = env::var("ARBITER_FIXTURE").ok();
-    let path: PathBuf = fixture_env.as_deref().unwrap_or(DEFAULT_FIXTURE).into();
-    if !path.is_file() {
-        if fixture_env.is_some() {
-            panic!(
-                "ARBITER_FIXTURE was set to {} but no file exists there; fix the path or unset ARBITER_FIXTURE",
-                path.display()
-            );
-        }
+    let Some(fixture_env) = env::var("ARBITER_FIXTURE").ok() else {
         eprintln!(
-            "\n\
-             ================================================================\n\
-             skipping loads_the_local_replay_when_present: fixture not present\n\
-             at the default path:\n\
-             \n\
-             {}\n\
-             \n\
-             This test only runs meaningfully against a real local replay.\n\
-             Set ARBITER_FIXTURE to a .SC2Replay path to run it for real.\n\
-             ================================================================\n",
-            path.display()
+            "skipping loads_the_local_replay_when_present: ARBITER_FIXTURE is not set; \
+             set it to a .SC2Replay path to run this test for real."
         );
         return;
+    };
+    let path: PathBuf = fixture_env.into();
+    if !path.is_file() {
+        panic!(
+            "ARBITER_FIXTURE was set to {} but no file exists there; fix the path or unset ARBITER_FIXTURE",
+            path.display()
+        );
     }
     let path: &Path = &path;
     let replay = replay::load(path).expect("replay should parse");

@@ -150,7 +150,7 @@ s2protocol = { version = "3.5", default-features = false, features = ["tracing_o
   in the JSON block, and the empty-state note when there are no points.
 - `replay.rs`: an integration test gated on the presence of a local fixture
   path, using the user-supplied replay
-  `the local fixture replay`.
+  the local fixture replay (set `ARBITER_FIXTURE` to its path).
   It asserts two players are found with non-empty names and that each has
   actions. The replay is not committed to the repo. The test is skipped, not
   failed, when the file is absent.

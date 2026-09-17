@@ -20,8 +20,8 @@
 - Escaping rules unchanged: all user text through `escape_html`; JSON `<` as `\u003c`.
 - Supply-block rule: `supply_made < 200 && supply_used >= supply_made - 0.5`, at least two consecutive samples. EPM rule: drop an action with the same kind as the player's previous action within 6 loops.
 - Panel order on the page: APM, Income, Army value, Supply, Workers, Unspent, Losses, then Player detail.
-- Fixture (not committed): `the local fixture replay`. It is a custom 4v4: 8 starting workers, supply above 200. Tests skip when it is absent.
-- Commit messages end with exactly `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`. `cargo test --workspace` and `cargo clippy --workspace --all-targets` pristine. Shell note: the Bash tool rejects very long commands; write files with the Write/Edit tools. Never search the filesystem from `/` or `C:\`; crate sources are under `C:\Users\user\.cargo\registry\src\index.crates.io-*\<crate>-<version>\`.
+- Fixture (not committed): the local fixture replay (set `ARBITER_FIXTURE` to its path). It is a custom 4v4: 8 starting workers, supply above 200. Tests skip when it is absent.
+- Commit messages end with exactly `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`. `cargo test --workspace` and `cargo clippy --workspace --all-targets` pristine. Shell note: the Bash tool rejects very long commands; write files with the Write/Edit tools. Never search the filesystem from `/` or `C:\`; crate sources are under `%USERPROFILE%\.cargo\registry\src\index.crates.io-*\<crate>-<version>\`.
 - Verified crate facts: `s2protocol::read_tracker_events(&str, &MPQ, &[u8]) -> Result<Vec<TrackerEvent>>`; `TrackerEvent { delta: u32, event: ReplayTrackerEvent }`; `ReplayTrackerEvent::PlayerStats(PlayerStatsEvent { player_id: u8, stats: PlayerStats })`; `PlayerStats` fields used: `minerals_collection_rate, vespene_collection_rate, minerals_current, vespene_current, workers_active_count, food_used, food_made, minerals_used_current_army, vespene_used_current_army, minerals_lost_army, vespene_lost_army` (all `i32`). Module path: `s2protocol::tracker_events::ReplayTrackerEvent`.
 
 ---

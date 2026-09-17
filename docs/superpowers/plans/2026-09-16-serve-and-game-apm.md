@@ -21,7 +21,7 @@
 - Exit codes unchanged: 0 / 1 / 2. `serve` startup failures (no roots, port busy) are exit 1 with one `error:` line.
 - Commit messages end with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 - Test and clippy output pristine. Shell note: the Bash tool rejects very long commands; write files with the Write/Edit tools.
-- Fixture (not committed): `the local fixture replay`. Tests that need it skip when it is absent.
+- Fixture (not committed): the local fixture replay (set `ARBITER_FIXTURE` to its path). Tests that need it skip when it is absent.
 - Crate facts (verified): `nom_mpq::MPQ::read_mpq_file_sector(&self, filename: &str, force_decompress: bool, orig_input: &[u8]) -> MPQResult<&[u8], Vec<u8>>` is nom-style: `Ok((rest, bytes))`. `tiny_http::Server::http(addr)`, `server.incoming_requests()`, `request.method()` implements `Display`, `request.url() -> &str`, `request.body_length() -> Option<usize>`, `request.as_reader() -> &mut dyn Read`, `request.respond(Response)`, `Response::from_data(Vec<u8>).with_status_code(u16).with_header(Header)`, `Header::from_bytes(name, value) -> Result<Header, ()>`.
 
 ---
@@ -746,7 +746,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 mod tests {
     use super::*;
 
-    const FIXTURE: &str = r"the local fixture replay";
+    const FIXTURE: &str = r"the local fixture replay (set ARBITER_FIXTURE to its path)";
 
     fn get(path: &str, query: &str, roots: &[PathBuf]) -> Resp {
         handle(&Req { method: "GET", path, query, body: &[] }, roots)

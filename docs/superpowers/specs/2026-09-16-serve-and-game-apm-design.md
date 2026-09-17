@@ -112,7 +112,7 @@ pub fn is_within(roots: &[PathBuf], path: &Path) -> Option<PathBuf>  // canonica
   `Documents\StarCraft II` and every directory matching
   `OneDrive*\Documents*\StarCraft II`. For each that exists, every
   `Accounts\*\*\Replays` directory beneath it is a root. The user's machine has
-  its replays at `OneDrive\Documents\StarCraft II\Accounts\<account>\<toon>\Replays\Multiplayer`.
+  its replays at `a OneDrive-redirected Documents folder`.
 - `find_replays` walks each root recursively, keeps files whose extension is
   `SC2Replay` (case-insensitive), and sorts by modified time descending.
   Unreadable entries are skipped silently.
