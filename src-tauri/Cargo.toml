@@ -3,6 +3,7 @@ name = "arbiter-app"
 version = "0.1.0"
 edition = "2024"
 description = "StarCraft II replay APM charts"
+license = "MIT OR Apache-2.0"
 
 [features]
 # Production mode is the default: the app serves its embedded `ui/` assets
