@@ -25,6 +25,7 @@ let lastSignature = '';
 let lastNames = '';
 let refreshToken = 0;
 let refreshing = 0;
+let loadToken = 0;
 
 const fmtDate = ms => ms ? new Date(ms).toLocaleString(undefined, {dateStyle: 'medium', timeStyle: 'short'}) : '';
 const fmtSize = n => Math.round(n / 1024) + ' KB';
@@ -38,7 +39,22 @@ function startWorker() {
   worker = new Worker(new URL('./worker.js', import.meta.url), {type: 'module'});
   worker.onmessage = e => {
     if (e.data.type === 'ready') { versionEl.textContent = 'v' + e.data.version; return; }
+    if (e.data.type === 'init-error') {
+      const msg = 'The parser could not load: ' + e.data.error;
+      showStatus(msg, true);
+      showWarning(msg);
+      return;
+    }
     const p = inflight.get(e.data.id);
+    if (e.data.fatal) {
+      inflight.delete(e.data.id);
+      if (p) p.reject(new Error(e.data.error));
+      for (const other of inflight.values()) other.reject(new Error('the parser crashed'));
+      inflight.clear();
+      worker.terminate();
+      startWorker();
+      return;
+    }
     if (!p) return;
     inflight.delete(e.data.id);
     e.data.error ? p.reject(new Error(e.data.error)) : p.resolve(e.data.html);
@@ -142,7 +158,13 @@ async function refresh(force) {
 
     let entries;
     try { entries = await src.list(); }
-    catch (e) { if (gen === sourceGeneration) showWarning('Could not read the folder: ' + e.message); return; }
+    catch (e) {
+      // A failed list() must not permanently wedge lastNames at a value that
+      // matches next tick's cheap names() check, or the retry above would
+      // never re-run list() again.
+      if (gen === sourceGeneration) { showWarning('Could not read the folder: ' + e.message); lastNames = ''; }
+      return;
+    }
     if (gen !== sourceGeneration) return;
     entries.sort((a, b) => b.modified - a.modified);
     const signature = entries.map(e => e.id + ':' + e.modified + ':' + e.size).join('|');
@@ -152,20 +174,26 @@ async function refresh(force) {
     if (selected && !rows.some(r => r.id === selected)) { selected = null; frame.srcdoc = ''; showStatus('Select a replay'); }
     render();
     if (!rows.length) showStatus('No .SC2Replay files found in ' + src.name + '.');
-    else if (!selected) showStatus('Select a replay');
+    else if (!selected && !frame.srcdoc) showStatus('Select a replay');
   } finally {
     if (refreshing === mine) refreshing = 0;
   }
 }
 
 async function loadEntry(entry) {
+  // Two quick selections can both be in flight; only the most recent one may
+  // touch the DOM, or a slow first parse could clobber a faster second pick.
+  const mine = ++loadToken;
   showStatus('Parsing ' + entry.name + '…');
   frame.srcdoc = '';
   try {
     const bytes = await entry.bytes();
-    frame.srcdoc = await parse(entry.name, bytes);
+    const html = await parse(entry.name, bytes);
+    if (mine !== loadToken) return;
+    frame.srcdoc = html;
     status.hidden = true;
   } catch (e) {
+    if (mine !== loadToken) return;
     showStatus('Could not chart this replay.\n' + e.message, true);
   }
 }
