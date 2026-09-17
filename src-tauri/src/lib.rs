@@ -1,5 +1,13 @@
 //! Arbiter desktop app: Tauri shell over the `arbiter` library.
 
+// A release build that lacks `custom-protocol` would ship a binary that
+// tries to load its UI from `cargo tauri dev`'s server on 127.0.0.1:1430
+// and shows "refused to connect" on every other machine. Refuse to build it.
+#[cfg(all(not(debug_assertions), not(feature = "custom-protocol")))]
+compile_error!(
+    "arbiter-app release builds must enable the `custom-protocol` feature; use `cargo tauri build` or plain `cargo build --release` (never `cargo tauri dev --release`)"
+);
+
 pub mod commands;
 pub mod config;
 pub mod watch;
@@ -61,6 +69,15 @@ pub fn run(initial_roots: Vec<PathBuf>) {
 
 #[cfg(test)]
 mod tests {
+    /// A plain `cargo build` / `cargo test` of this crate must produce a
+    /// production-mode app that serves its embedded `ui/` assets over Tauri's
+    /// internal protocol. Only `cargo tauri dev` may opt into a dev server,
+    /// which it does by disabling the crate's default features itself.
+    #[test]
+    fn default_features_embed_assets_instead_of_using_a_dev_server() {
+        assert!(!tauri::is_dev(), "arbiter-app compiled in dev mode: enable the custom-protocol feature by default");
+    }
+
     use super::*;
 
     #[test]

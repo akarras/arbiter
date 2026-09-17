@@ -4,6 +4,14 @@ version = "0.1.0"
 edition = "2024"
 description = "StarCraft II replay APM charts"
 
+[features]
+# Production mode is the default: the app serves its embedded `ui/` assets
+# over Tauri's internal protocol and never contacts a dev server. Only
+# `cargo tauri dev` turns this off (it passes --no-default-features itself)
+# so it can hot-reload from its built-in static server. DO NOT REMOVE.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
